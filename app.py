@@ -447,8 +447,10 @@ if st.session_state.analyzing:
     models = st.session_state.get("analysis_models", [])
     total = len(models)
     consensus_model = st.session_state.get("consensus_model_name")
-    if step <= total:
+    if step <= total and total > 1:
         button_label = f"Analyzing ({step}/{total} models)..."
+    elif step <= total:
+        button_label = "Analyzing..."
     elif consensus_model:
         button_label = "Generating consensus..."
     else:
@@ -537,8 +539,14 @@ if symbol:
                         st.session_state.chart_b64 = chart_to_base64_png(fig, ind)
                     except Exception as e:
                         st.session_state.analyzing = False
+                        st.session_state.done = True
                         st.session_state.ai_errors["_chart"] = f"Chart export failed: {e}"
                         st.rerun()
+
+            if "chart_b64" not in st.session_state:
+                st.session_state.analyzing = False
+                st.session_state.done = True
+                st.rerun()
 
             image_b64 = st.session_state.chart_b64
 
@@ -616,15 +624,15 @@ if symbol:
             ai_errors = st.session_state.get("ai_errors", {})
             consensus_output = st.session_state.get("consensus_output", "")
             consensus_error = st.session_state.get("consensus_error", "")
+            model_errors = {k: v for k, v in ai_errors.items() if k != "_chart"}
 
-            if len(ai_outputs) + len(ai_errors) == 1 and not consensus_output:
+            if len(ai_outputs) + len(model_errors) == 1 and not consensus_output:
                 # Single model: show directly without expanders
                 st.subheader("AI Analysis")
                 for model_name, output in ai_outputs.items():
                     st.markdown(output)
-                for model_name, error in ai_errors.items():
-                    if model_name != "_chart":
-                        st.error(f"**{model_name}**: {error}")
+                for model_name, error in model_errors.items():
+                    st.error(f"**{model_name}**: {error}")
             else:
                 # Multi-model: show in expanders
                 st.subheader("AI Analysis")
@@ -632,9 +640,9 @@ if symbol:
                     if model_name in ai_outputs:
                         with st.expander(model_name, expanded=False):
                             st.markdown(ai_outputs[model_name])
-                    elif model_name in ai_errors:
+                    elif model_name in model_errors:
                         with st.expander(model_name, expanded=False):
-                            st.error(ai_errors[model_name])
+                            st.error(model_errors[model_name])
 
                 # Consensus section
                 if consensus_output:
