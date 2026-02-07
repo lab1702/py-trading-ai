@@ -282,7 +282,7 @@ def build_analysis_prompt(symbol: str, df: pd.DataFrame, ind: Indicators) -> str
 
 @st.cache_data(show_spinner=False, ttl=30)
 def fetch_ollama_models() -> list[dict]:
-    """Fetch vision-capable models with parameter size from Ollama."""
+    """Fetch all models with parameter size and capabilities from Ollama."""
     try:
         resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
         resp.raise_for_status()
@@ -290,7 +290,7 @@ def fetch_ollama_models() -> list[dict]:
     except Exception:
         return []
 
-    vision_models = []
+    result = []
     for m in models:
         try:
             show = requests.post(
@@ -298,32 +298,33 @@ def fetch_ollama_models() -> list[dict]:
                 json={"model": m["name"]},
                 timeout=5,
             ).json()
-            if "vision" not in show.get("capabilities", []):
-                continue
+            capabilities = show.get("capabilities", [])
             param_size = show.get("details", {}).get("parameter_size", "")
             disk_bytes = m.get("size", 0)
             if disk_bytes >= 1 << 30:
                 disk_size = f"{disk_bytes / (1 << 30):.1f} GB"
             else:
                 disk_size = f"{disk_bytes / (1 << 20):.0f} MB"
-            vision_models.append({
+            result.append({
                 "name": m["name"],
                 "parameter_size": param_size,
                 "disk_size": disk_size,
+                "capabilities": capabilities,
             })
         except Exception:
             continue
-    return vision_models
+    return result
 
 
-def stream_ollama_response(model: str, prompt: str, image_b64: str):
+def stream_ollama_response(model: str, prompt: str, image_b64: str | None = None):
     """Generator that yields text chunks from the Ollama API."""
     payload = {
         "model": model,
         "prompt": prompt,
-        "images": [image_b64],
         "stream": True,
     }
+    if image_b64 is not None:
+        payload["images"] = [image_b64]
     with requests.post(
         f"{OLLAMA_BASE_URL}/api/generate", json=payload, stream=True, timeout=(10, 600)
     ) as resp:
@@ -336,6 +337,48 @@ def stream_ollama_response(model: str, prompt: str, image_b64: str):
                     yield token
                 if data.get("done", False):
                     return
+
+
+def _format_model_label(m: dict) -> str:
+    """Format a model dict into a display label with size info and vision tag."""
+    parts = [m["parameter_size"], m["disk_size"]]
+    info = ", ".join(p for p in parts if p)
+    label = f"{m['name']} ({info})" if info else m["name"]
+    if "vision" in m.get("capabilities", []):
+        label += " [vision]"
+    return label
+
+
+def build_consensus_prompt(
+    symbol: str,
+    model_analyses: dict[str, str],
+    df: pd.DataFrame,
+    ind: Indicators,
+) -> str:
+    """Build a prompt for the consensus summarizer model."""
+    latest = df.iloc[-1]
+    active = ind.active_labels()
+    indicator_text = ", ".join(active) if active else "None"
+
+    analyses_text = ""
+    for model_name, analysis in model_analyses.items():
+        analyses_text += f"\n--- {model_name} ---\n{analysis}\n"
+
+    return (
+        f"You are a financial analysis synthesizer. Below are independent technical analyses "
+        f"of a candlestick chart for {symbol.upper()} (latest close: ${latest['Close']:.2f}) "
+        f"with these indicators: {indicator_text}.\n\n"
+        f"Individual analyses:{analyses_text}\n"
+        f"Synthesize these analyses into a consensus report with exactly these four sections. "
+        f"Refer to each model by its name (e.g. {', '.join(model_analyses.keys())}) rather than "
+        f"generic labels like 'Model 1'.\n\n"
+        f"**Consensus Level**: Rate as Strong / Moderate / Mixed / Contradictory based on "
+        f"how well the analyses agree.\n\n"
+        f"**Points of Agreement**: Key findings where the analysts concur.\n\n"
+        f"**Points of Disagreement**: Areas where the analysts diverge or contradict.\n\n"
+        f"**Synthesized Outlook**: Your overall assessment combining all perspectives, "
+        f"noting confidence level. Be concise."
+    )
 
 
 # ── Streamlit UI ─────────────────────────────────────────────────────────────
@@ -352,8 +395,14 @@ if "done" not in st.session_state:
 def _on_input_change():
     """Clear 'done' state and stale output/error when any input changes."""
     st.session_state.done = False
-    st.session_state.ai_output = ""
-    st.session_state.ai_error = ""
+    st.session_state.ai_outputs = {}
+    st.session_state.ai_errors = {}
+    st.session_state.consensus_output = ""
+    st.session_state.consensus_error = ""
+    st.session_state.analysis_step = 0
+    st.session_state.analysis_models = []
+    st.session_state.consensus_model_name = None
+    st.session_state.pop("chart_b64", None)
 
 def _uppercase_symbol():
     st.session_state.symbol = st.session_state.symbol.strip().upper()
@@ -394,7 +443,18 @@ ind = Indicators(
 
 # Sidebar: analyze button
 if st.session_state.analyzing:
-    button_label = "Analyzing..."
+    step = st.session_state.get("analysis_step", 0)
+    models = st.session_state.get("analysis_models", [])
+    total = len(models)
+    consensus_model = st.session_state.get("consensus_model_name")
+    if step <= total and total > 1:
+        button_label = f"Analyzing ({step}/{total} models)..."
+    elif step <= total:
+        button_label = "Analyzing..."
+    elif consensus_model:
+        button_label = "Generating consensus..."
+    else:
+        button_label = "Analyzing..."
 elif st.session_state.done:
     button_label = "Done"
 else:
@@ -402,21 +462,43 @@ else:
 
 st.sidebar.divider()
 available_models = fetch_ollama_models()
-if available_models:
-    model_labels = []
-    for m in available_models:
-        parts = [m["parameter_size"], m["disk_size"]]
-        info = ", ".join(p for p in parts if p)
-        model_labels.append(f"{m['name']} ({info})" if info else m["name"])
-    model_idx = st.sidebar.selectbox("Ollama model", range(len(available_models)),
-                                     format_func=lambda i: model_labels[i],
-                                     on_change=_on_input_change, disabled=locked)
-    selected_model = available_models[model_idx]["name"]
+vision_models = [m for m in available_models if "vision" in m.get("capabilities", [])]
+
+selected_vision_names: list[str] = []
+selected_consensus_model: str | None = None
+
+if vision_models:
+    vision_labels = {m["name"]: _format_model_label(m) for m in vision_models}
+    vision_names = list(vision_labels.keys())
+    selected_vision_names = st.sidebar.multiselect(
+        "Vision models",
+        options=vision_names,
+        default=[],
+        format_func=lambda n: vision_labels[n],
+        on_change=_on_input_change,
+        disabled=locked,
+    )
 else:
     st.sidebar.warning("No vision-capable models found in Ollama.")
-    selected_model = None
 
-button_disabled = locked or not symbol or not selected_model or st.session_state.done
+if available_models:
+    all_labels = {m["name"]: _format_model_label(m) for m in available_models}
+    all_names = list(all_labels.keys())
+    consensus_enabled = len(selected_vision_names) >= 2
+    consensus_selection = st.sidebar.selectbox(
+        "Consensus model",
+        options=[None] + all_names,
+        index=0,
+        format_func=lambda n: "Select a model..." if n is None else all_labels[n],
+        on_change=_on_input_change,
+        disabled=locked or not consensus_enabled,
+        help="Summarizes analyses from multiple vision models. Requires 2+ vision models selected.",
+    )
+    if consensus_enabled and consensus_selection is not None:
+        selected_consensus_model = consensus_selection
+
+needs_consensus = len(selected_vision_names) >= 2 and selected_consensus_model is None
+button_disabled = locked or not symbol or not selected_vision_names or needs_consensus or st.session_state.done
 
 if st.sidebar.button(
     button_label,
@@ -425,6 +507,13 @@ if st.sidebar.button(
     width="stretch",
 ):
     st.session_state.analyzing = True
+    st.session_state.analysis_step = 1
+    st.session_state.analysis_models = list(selected_vision_names)
+    st.session_state.consensus_model_name = selected_consensus_model
+    st.session_state.ai_outputs = {}
+    st.session_state.ai_errors = {}
+    st.session_state.consensus_output = ""
+    st.session_state.consensus_error = ""
     st.rerun()
 
 if symbol:
@@ -438,37 +527,131 @@ if symbol:
         st.plotly_chart(fig, width="stretch")
 
         if st.session_state.analyzing:
-            with st.spinner("Capturing chart..."):
-                try:
-                    image_b64 = chart_to_base64_png(fig, ind)
-                except Exception as e:
-                    st.session_state.analyzing = False
-                    st.session_state.ai_error = f"Chart export failed: {e}"
-                    st.rerun()
+            step = st.session_state.get("analysis_step", 0)
+            models = st.session_state.get("analysis_models", [])
+            consensus_model = st.session_state.get("consensus_model_name")
+            total = len(models)
 
-            prompt = build_analysis_prompt(symbol, df, ind)
+            # Capture chart image once on first step
+            if "chart_b64" not in st.session_state:
+                with st.spinner("Capturing chart..."):
+                    try:
+                        st.session_state.chart_b64 = chart_to_base64_png(fig, ind)
+                    except Exception as e:
+                        st.session_state.analyzing = False
+                        st.session_state.done = True
+                        st.session_state.ai_errors["_chart"] = f"Chart export failed: {e}"
+                        st.rerun()
 
-            st.subheader("AI Analysis")
-            try:
-                result = st.write_stream(stream_ollama_response(selected_model, prompt, image_b64))
-                st.session_state.ai_output = result
-                st.session_state.done = True
-            except requests.ConnectionError:
-                st.session_state.ai_error = (
-                    f"Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
-                    "Make sure Ollama is running."
-                )
-            except requests.HTTPError as e:
-                st.session_state.ai_error = f"Ollama returned an error: {e}"
-            except Exception as e:
-                st.session_state.ai_error = f"Unexpected error during analysis: {e}"
-            finally:
+            if "chart_b64" not in st.session_state:
                 st.session_state.analyzing = False
+                st.session_state.done = True
                 st.rerun()
 
-        elif st.session_state.get("ai_error"):
-            st.error(st.session_state.ai_error)
+            image_b64 = st.session_state.chart_b64
 
-        elif st.session_state.get("ai_output"):
-            st.subheader("AI Analysis")
-            st.markdown(st.session_state.ai_output)
+            if step >= 1 and step <= total:
+                # Vision model analysis step
+                current_model = models[step - 1]
+                prompt = build_analysis_prompt(symbol, df, ind)
+
+                st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
+                try:
+                    result = st.write_stream(
+                        stream_ollama_response(current_model, prompt, image_b64)
+                    )
+                    st.session_state.ai_outputs[current_model] = result
+                except requests.ConnectionError:
+                    st.session_state.ai_errors[current_model] = (
+                        f"Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
+                        "Make sure Ollama is running."
+                    )
+                except requests.HTTPError as e:
+                    st.session_state.ai_errors[current_model] = (
+                        f"Ollama returned an error: {e}"
+                    )
+                except Exception as e:
+                    st.session_state.ai_errors[current_model] = (
+                        f"Unexpected error during analysis: {e}"
+                    )
+
+                st.session_state.analysis_step = step + 1
+
+                # Check if we're done with vision models
+                if step == total:
+                    successful = st.session_state.ai_outputs
+                    if len(successful) >= 2 and consensus_model:
+                        # Move to consensus step
+                        st.rerun()
+                    else:
+                        # Skip consensus: single model, no consensus model, or not enough successes
+                        st.session_state.analyzing = False
+                        st.session_state.done = True
+                        st.rerun()
+                else:
+                    st.rerun()
+
+            elif step == total + 1 and consensus_model:
+                # Consensus summarizer step
+                successful = st.session_state.ai_outputs
+                st.subheader("Generating Consensus...")
+                consensus_prompt = build_consensus_prompt(symbol, successful, df, ind)
+                try:
+                    result = st.write_stream(
+                        stream_ollama_response(consensus_model, consensus_prompt)
+                    )
+                    st.session_state.consensus_output = result
+                except requests.ConnectionError:
+                    st.session_state.consensus_error = (
+                        f"Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
+                        "Make sure Ollama is running."
+                    )
+                except requests.HTTPError as e:
+                    st.session_state.consensus_error = (
+                        f"Ollama returned an error: {e}"
+                    )
+                except Exception as e:
+                    st.session_state.consensus_error = (
+                        f"Unexpected error during consensus: {e}"
+                    )
+                finally:
+                    st.session_state.analyzing = False
+                    st.session_state.done = True
+                    st.rerun()
+
+        elif st.session_state.done:
+            ai_outputs = st.session_state.get("ai_outputs", {})
+            ai_errors = st.session_state.get("ai_errors", {})
+            consensus_output = st.session_state.get("consensus_output", "")
+            consensus_error = st.session_state.get("consensus_error", "")
+            model_errors = {k: v for k, v in ai_errors.items() if k != "_chart"}
+
+            if len(ai_outputs) + len(model_errors) == 1 and not consensus_output:
+                # Single model: show directly without expanders
+                st.subheader("AI Analysis")
+                for model_name, output in ai_outputs.items():
+                    st.markdown(output)
+                for model_name, error in model_errors.items():
+                    st.error(f"**{model_name}**: {error}")
+            else:
+                # Multi-model: show in expanders
+                st.subheader("AI Analysis")
+                for model_name in st.session_state.get("analysis_models", []):
+                    if model_name in ai_outputs:
+                        with st.expander(model_name, expanded=False):
+                            st.markdown(ai_outputs[model_name])
+                    elif model_name in model_errors:
+                        with st.expander(model_name, expanded=False):
+                            st.error(model_errors[model_name])
+
+                # Consensus section
+                if consensus_output:
+                    st.subheader("Consensus Summary")
+                    st.markdown(consensus_output)
+                elif consensus_error:
+                    st.subheader("Consensus Summary")
+                    st.error(consensus_error)
+
+            # Show chart export error if any
+            if ai_errors.get("_chart"):
+                st.error(ai_errors["_chart"])
