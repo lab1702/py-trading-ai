@@ -1,0 +1,41 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Stock Chart AI Analyzer — a Streamlit web app that displays interactive candlestick charts (via Plotly/yfinance) and sends chart screenshots to a local Ollama vision model for AI-powered technical analysis.
+
+## Commands
+
+```bash
+# Setup
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Run the app (requires Ollama running locally with a vision-capable model)
+streamlit run app.py
+```
+
+There is no test suite or linter configured.
+
+## Architecture
+
+This is a single-file application (`app.py`). All logic lives there:
+
+- **Data layer**: `fetch_stock_data()` pulls OHLCV data from Yahoo Finance via `yfinance`, cached for 5 minutes (`@st.cache_data(ttl=300)`). `_compute_indicators()` adds technical indicator columns (SMA, EMA, Bollinger Bands, VWAP, RSI, MACD) to the DataFrame in-place.
+- **Chart layer**: `build_candlestick_chart()` constructs a Plotly `Figure` with dynamic subplots — the number of rows varies based on which indicators (RSI, MACD) are enabled. Helper functions `_add_overlays`, `_add_volume`, `_add_rsi`, `_add_macd` each add traces to specific subplot rows. `chart_to_base64_png()` exports the figure to a base64-encoded PNG using Kaleido.
+- **AI layer**: `fetch_ollama_models()` queries the local Ollama API (`/api/tags` + `/api/show`) to discover vision-capable models, cached for 30 seconds. `stream_ollama_response()` sends the chart image + a constructed prompt to `/api/generate` and yields streamed text tokens. `build_analysis_prompt()` builds the system prompt with latest price data and active indicator names.
+- **UI layer** (bottom of file): Streamlit sidebar controls for symbol, period, indicator toggles, and model selection. Uses `st.session_state` with `analyzing`/`done` flags to manage the analyze-rerun cycle. Inputs are locked during analysis via a `locked` flag.
+
+## Key Design Decisions
+
+- Ollama base URL is hardcoded as `OLLAMA_BASE_URL = "http://localhost:11434"` at the top of the file.
+- The `Indicators` dataclass centralizes which indicators are active and provides `active_labels()` for prompt construction.
+- Chart height is dynamic: base 500px + 200px per sub-chart (RSI/MACD). Image export uses 2x scale at 1200px width.
+- The app uses `st.rerun()` after the analyze button click and after analysis completes to manage Streamlit's execution model.
+
+## Dependencies
+
+Python 3.13+. Key packages: `streamlit`, `plotly`, `yfinance`, `requests`, `kaleido` (for Plotly image export). NumPy and Pandas are transitive deps used directly.
