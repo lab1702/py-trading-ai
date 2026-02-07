@@ -11,7 +11,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "gemma3"
 
 
 @dataclass
@@ -80,8 +79,9 @@ def _compute_indicators(df: pd.DataFrame) -> None:
     loss = (-delta).where(delta < 0, 0.0)
     avg_gain = gain.rolling(window=14, min_periods=14).mean()
     avg_loss = loss.rolling(window=14, min_periods=14).mean()
-    rs = avg_gain / avg_loss
-    df["RSI"] = np.where(avg_loss == 0, 100, 100 - (100 / (1 + rs)))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rs = avg_gain / avg_loss
+        df["RSI"] = np.where(avg_loss == 0, 100, 100 - (100 / (1 + rs)))
 
     # MACD
     df["MACD"] = df["EMA_12"] - df["EMA_26"]
@@ -280,16 +280,52 @@ def build_analysis_prompt(symbol: str, df: pd.DataFrame, ind: Indicators) -> str
     )
 
 
-def stream_ollama_response(prompt: str, image_b64: str):
+@st.cache_data(show_spinner=False, ttl=30)
+def fetch_ollama_models() -> list[dict]:
+    """Fetch vision-capable models with parameter size from Ollama."""
+    try:
+        resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        resp.raise_for_status()
+        models = resp.json().get("models", [])
+    except Exception:
+        return []
+
+    vision_models = []
+    for m in models:
+        try:
+            show = requests.post(
+                f"{OLLAMA_BASE_URL}/api/show",
+                json={"model": m["name"]},
+                timeout=5,
+            ).json()
+            if "vision" not in show.get("capabilities", []):
+                continue
+            param_size = show.get("details", {}).get("parameter_size", "")
+            disk_bytes = m.get("size", 0)
+            if disk_bytes >= 1 << 30:
+                disk_size = f"{disk_bytes / (1 << 30):.1f} GB"
+            else:
+                disk_size = f"{disk_bytes / (1 << 20):.0f} MB"
+            vision_models.append({
+                "name": m["name"],
+                "parameter_size": param_size,
+                "disk_size": disk_size,
+            })
+        except Exception:
+            continue
+    return vision_models
+
+
+def stream_ollama_response(model: str, prompt: str, image_b64: str):
     """Generator that yields text chunks from the Ollama API."""
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": model,
         "prompt": prompt,
         "images": [image_b64],
         "stream": True,
     }
     with requests.post(
-        f"{OLLAMA_BASE_URL}/api/generate", json=payload, stream=True, timeout=120
+        f"{OLLAMA_BASE_URL}/api/generate", json=payload, stream=True, timeout=(10, 600)
     ) as resp:
         resp.raise_for_status()
         for line in resp.iter_lines():
@@ -364,9 +400,24 @@ elif st.session_state.done:
 else:
     button_label = "Analyze with AI"
 
-button_disabled = locked or not symbol or st.session_state.done
-
 st.sidebar.divider()
+available_models = fetch_ollama_models()
+if available_models:
+    model_labels = []
+    for m in available_models:
+        parts = [m["parameter_size"], m["disk_size"]]
+        info = ", ".join(p for p in parts if p)
+        model_labels.append(f"{m['name']} ({info})" if info else m["name"])
+    model_idx = st.sidebar.selectbox("Ollama model", range(len(available_models)),
+                                     format_func=lambda i: model_labels[i],
+                                     on_change=_on_input_change, disabled=locked)
+    selected_model = available_models[model_idx]["name"]
+else:
+    st.sidebar.warning("No vision-capable models found in Ollama.")
+    selected_model = None
+
+button_disabled = locked or not symbol or not selected_model or st.session_state.done
+
 if st.sidebar.button(
     button_label,
     type="primary",
@@ -399,7 +450,7 @@ if symbol:
 
             st.subheader("AI Analysis")
             try:
-                result = st.write_stream(stream_ollama_response(prompt, image_b64))
+                result = st.write_stream(stream_ollama_response(selected_model, prompt, image_b64))
                 st.session_state.ai_output = result
                 st.session_state.done = True
             except requests.ConnectionError:
