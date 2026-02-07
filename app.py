@@ -316,6 +316,16 @@ def fetch_ollama_models() -> list[dict]:
     return result
 
 
+def _escape_markdown(text: str) -> str:
+    """Escape characters that Streamlit's markdown renderer misinterprets."""
+    return text.replace("$", "\\$").replace("_", "\\_")
+
+
+def _unescape_markdown(text: str) -> str:
+    """Reverse _escape_markdown so raw text can be re-used in prompts."""
+    return text.replace("\\$", "$").replace("\\_", "_")
+
+
 def stream_ollama_response(model: str, prompt: str, image_b64: str | None = None):
     """Generator that yields text chunks from the Ollama API."""
     payload = {
@@ -334,7 +344,7 @@ def stream_ollama_response(model: str, prompt: str, image_b64: str | None = None
                 data = json.loads(line)
                 token = data.get("response", "")
                 if token:
-                    yield token
+                    yield _escape_markdown(token)
                 if data.get("done", False):
                     return
 
@@ -362,7 +372,7 @@ def build_consensus_prompt(
 
     analyses_text = ""
     for model_name, analysis in model_analyses.items():
-        analyses_text += f"\n--- {model_name} ---\n{analysis}\n"
+        analyses_text += f"\n--- {model_name} ---\n{_unescape_markdown(analysis)}\n"
 
     return (
         f"You are a financial analysis synthesizer. Below are independent technical analyses "
