@@ -12,7 +12,8 @@ A web-based stock technical analysis tool that combines interactive candlestick 
   - VWAP
   - RSI (14-period)
   - MACD (12, 26, 9)
-- **AI-powered chart analysis** using a local Ollama Gemma3 model, including trend analysis, support/resistance levels, candlestick pattern recognition, and indicator signals
+- **AI-powered chart analysis** using a local Ollama vision model, including trend analysis, support/resistance levels, candlestick pattern recognition, and indicator signals
+- **Dynamic model selector** — automatically detects vision-capable Ollama models and lets you choose from a dropdown
 - **Chart export** to PNG (1200x600+, 2x scale)
 - **Streaming AI responses** for a responsive experience
 - **5-minute data caching** to reduce redundant API calls
@@ -20,10 +21,11 @@ A web-based stock technical analysis tool that combines interactive candlestick 
 ## Prerequisites
 
 - Python 3.13+
-- [Ollama](https://ollama.com/) running locally with the `gemma3` model pulled:
+- [Ollama](https://ollama.com/) running locally with at least one vision-capable model pulled. We recommend trying `gemma3` first:
   ```bash
   ollama pull gemma3
   ```
+  Other vision-capable models (e.g. `llava`, `llama3.2-vision`) will also work — the app automatically detects and lists all available vision models.
 
 ## Installation
 
@@ -48,7 +50,8 @@ The app opens at `http://localhost:8501`. Use the sidebar to:
 1. Enter a stock symbol (e.g. `AAPL`)
 2. Select a time period
 3. Toggle technical indicators
-4. Click **Analyze with AI** to get a streamed AI analysis of the chart
+4. Choose a vision-capable Ollama model from the dropdown
+5. Click **Analyze with AI** to get a streamed AI analysis of the chart
 
 ## Tech Stack
 
@@ -59,4 +62,4 @@ The app opens at `http://localhost:8501`. Use the sidebar to:
 | Market data | yfinance |
 | Data processing | Pandas, NumPy |
 | Image export | Kaleido |
-| AI analysis | Ollama (Gemma3) |
+| AI analysis | Ollama (any vision-capable model) |
