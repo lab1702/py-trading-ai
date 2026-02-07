@@ -31,7 +31,7 @@ A web-based stock technical analysis tool that combines interactive candlestick 
 ## Installation
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/lab1702/py-trading-ai
 cd py-trading-ai
 python -m venv .venv
 source .venv/bin/activate
