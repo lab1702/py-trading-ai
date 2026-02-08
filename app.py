@@ -18,7 +18,6 @@ class Indicators:
     sma: bool = True
     ema: bool = True
     bb: bool = True
-    vwap: bool = True
     rsi: bool = True
     macd: bool = True
 
@@ -30,8 +29,6 @@ class Indicators:
             labels.append("EMA (12, 26)")
         if self.bb:
             labels.append("Bollinger Bands (20, 2σ)")
-        if self.vwap:
-            labels.append("VWAP")
         if self.rsi:
             labels.append("RSI (14)")
         if self.macd:
@@ -73,22 +70,16 @@ def _compute_indicators(df: pd.DataFrame) -> None:
 
     # Bollinger Bands
     df["BB_Mid"] = df["SMA_20"]
-    bb_std = close.rolling(window=20).std()
+    bb_std = close.rolling(window=20).std(ddof=0)
     df["BB_Upper"] = df["BB_Mid"] + 2 * bb_std
     df["BB_Lower"] = df["BB_Mid"] - 2 * bb_std
-
-    # VWAP
-    typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
-    cum_tp_vol = (typical_price * df["Volume"]).cumsum()
-    cum_vol = df["Volume"].cumsum()
-    df["VWAP"] = cum_tp_vol / cum_vol.replace(0, np.nan)
 
     # RSI (14-period)
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=14, min_periods=14).mean()
-    avg_loss = loss.rolling(window=14, min_periods=14).mean()
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     with np.errstate(divide="ignore", invalid="ignore"):
         rs = avg_gain / avg_loss
         df["RSI"] = np.where(avg_loss == 0, 100, 100 - (100 / (1 + rs)))
@@ -138,12 +129,6 @@ def _add_overlays(fig: go.Figure, df: pd.DataFrame, ind: Indicators) -> None:
             row=1, col=1,
         )
 
-    if ind.vwap:
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["VWAP"], name="VWAP",
-                       line=dict(width=1.5, color="blue", dash="dashdot")),
-            row=1, col=1,
-        )
 
 
 def _add_volume(fig: go.Figure, df: pd.DataFrame) -> None:
@@ -447,8 +432,6 @@ show_ema = st.sidebar.checkbox("EMA (12, 26)", value=True, on_change=_on_input_c
                                disabled=locked)
 show_bb = st.sidebar.checkbox("Bollinger Bands", value=True, on_change=_on_input_change,
                               disabled=locked)
-show_vwap = st.sidebar.checkbox("VWAP", value=True, on_change=_on_input_change,
-                                disabled=locked)
 show_rsi = st.sidebar.checkbox("RSI (14)", value=True, on_change=_on_input_change,
                                disabled=locked)
 show_macd = st.sidebar.checkbox("MACD", value=True, on_change=_on_input_change,
@@ -458,7 +441,6 @@ ind = Indicators(
     sma=show_sma,
     ema=show_ema,
     bb=show_bb,
-    vwap=show_vwap,
     rsi=show_rsi,
     macd=show_macd,
 )
@@ -492,10 +474,30 @@ selected_consensus_model: str | None = None
 if vision_models:
     vision_labels = {m["name"]: _format_model_label(m) for m in vision_models}
     vision_names = list(vision_labels.keys())
+
+    if "selected_vision" not in st.session_state:
+        st.session_state.selected_vision = []
+
+    all_selected = len(vision_names) > 0 and set(st.session_state.selected_vision) == set(vision_names)
+    st.session_state.select_all_vision = all_selected
+
+    def _toggle_select_all():
+        if st.session_state.select_all_vision:
+            st.session_state.selected_vision = list(vision_names)
+        else:
+            st.session_state.selected_vision = []
+        _on_input_change()
+
+    st.sidebar.checkbox(
+        "Select all vision models",
+        key="select_all_vision",
+        disabled=locked,
+        on_change=_toggle_select_all,
+    )
     selected_vision_names = st.sidebar.multiselect(
         "Vision models",
         options=vision_names,
-        default=[],
+        key="selected_vision",
         format_func=lambda n: vision_labels[n],
         on_change=_on_input_change,
         disabled=locked,
