@@ -49,6 +49,16 @@ def fetch_stock_data(symbol: str, period: str) -> pd.DataFrame | None:
     return df
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_company_name(symbol: str) -> str:
+    """Look up the long company name for a ticker symbol."""
+    try:
+        info = yf.Ticker(symbol).info
+        return info.get("longName") or info.get("shortName") or symbol.upper()
+    except Exception:
+        return symbol.upper()
+
+
 def _compute_indicators(df: pd.DataFrame) -> None:
     """Compute technical indicator columns on the dataframe in-place."""
     close = df["Close"]
@@ -181,11 +191,13 @@ def _add_macd(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
     )
 
 
-def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators) -> go.Figure:
+def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
+                            title: str | None = None) -> go.Figure:
     # Determine subplot layout
     rows = 2
     row_heights = [0.5, 0.15]
-    subplot_titles = [f"{symbol.upper()} Price", "Volume"]
+    price_title = title or f"{symbol.upper()} Price"
+    subplot_titles = [price_title, "Volume"]
 
     if ind.rsi:
         rows += 1
@@ -529,11 +541,13 @@ if st.sidebar.button(
 if symbol:
     with st.spinner("Fetching market data..."):
         df = fetch_stock_data(symbol, period)
+        company_name = fetch_company_name(symbol)
 
     if df is None or df.empty:
         st.error(f"No data found for **{symbol}**. Check the symbol and try again.")
     else:
-        fig = build_candlestick_chart(df, symbol, ind)
+        chart_title = f"{company_name} ({symbol.upper()})"
+        fig = build_candlestick_chart(df, symbol, ind, title=chart_title)
         st.plotly_chart(fig, width="stretch")
 
         if st.session_state.analyzing:
