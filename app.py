@@ -445,7 +445,7 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
 
     base_height = 500
     sub_chart_height = 200
-    extra = sum([show_rsi, show_macd, show_atr, show_adx])
+    extra = int(sum([show_rsi, show_macd, show_atr, show_adx]))
     chart_height = base_height + extra * sub_chart_height
 
     # Dark theme
@@ -473,7 +473,7 @@ def chart_to_base64_png(fig: go.Figure, ind: Indicators, df: pd.DataFrame) -> st
         ind.atr and df["ATR"].notna().any(),
         ind.adx and df["ADX"].notna().any(),
     ])
-    img_height = 600 + extra * 200
+    img_height = int(600 + extra * 200)
     img_bytes = fig.to_image(format="png", width=1200, height=img_height, scale=2)
     return base64.b64encode(img_bytes).decode("utf-8")
 
@@ -1351,7 +1351,7 @@ if is_single_mode and symbol:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
         fig = build_candlestick_chart(df, symbol, ind, title=chart_title)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, width="stretch", height=int(fig.layout.height))
 
         # Determine strategic period
         strategic_period = STRATEGIC_PERIOD_MAP.get(period)
