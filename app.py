@@ -120,12 +120,17 @@ def fetch_news_headlines(symbol: str, limit: int = 5) -> list[dict]:
             return []
         results = []
         for item in news[:limit]:
-            title = item.get("title", "")
-            publisher = item.get("publisher", "")
-            pub_time = item.get("providerPublishTime")
+            content = item.get("content", {})
+            title = content.get("title", "")
+            provider = content.get("provider", {})
+            publisher = provider.get("displayName", "")
+            pub_date = content.get("pubDate", "")
             date_str = ""
-            if pub_time:
-                date_str = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d")
+            if pub_date:
+                try:
+                    date_str = datetime.fromisoformat(pub_date.replace("Z", "+00:00")).strftime("%Y-%m-%d")
+                except (ValueError, AttributeError):
+                    pass
             if title:
                 results.append({"title": title, "publisher": publisher, "date": date_str})
         return results
@@ -206,6 +211,9 @@ def _compute_indicators(df: pd.DataFrame) -> None:
         df["Minus_DI"] = 100 * minus_dm.ewm(span=14, adjust=False).mean() / atr14
         dx = (abs(df["Plus_DI"] - df["Minus_DI"]) / (df["Plus_DI"] + df["Minus_DI"])) * 100
     df["ADX"] = dx.ewm(span=14, adjust=False).mean()
+    # Blank out warm-up period (need ~28 bars: 14 for ATR/DI smoothing + 14 for ADX smoothing)
+    warmup = 28
+    df.loc[df.index[:warmup], ["ADX", "Plus_DI", "Minus_DI"]] = np.nan
 
 
 def compute_support_resistance(
@@ -458,7 +466,7 @@ def chart_to_base64_png(fig: go.Figure, ind: Indicators) -> str:
     return base64.b64encode(img_bytes).decode("utf-8")
 
 
-def build_observation_messages(
+def _build_prompt_data_lines(
     symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
     fundamentals: dict | None = None,
     earnings_info: str | None = None,
@@ -467,88 +475,8 @@ def build_observation_messages(
     resistance_levels: list[float] | None = None,
     strategic_period: str | None = None,
     news_headlines: list[dict] | None = None,
-) -> tuple[str, str]:
-    """Return (system_prompt, user_prompt) for the observation pass (pass 1).
-
-    Instructs the model to list factual observations only — no predictions
-    or recommendations.
-    """
-    system_prompt = (
-        "You are a stock market technical analyst. Your task is to OBSERVE and LIST "
-        "every technical signal visible on the chart and in the data. Do NOT make "
-        "predictions, recommendations, or draw conclusions.\n\n"
-        "List your observations in these categories:\n"
-        "- **Price Action**: Trend direction, higher highs/lows, consolidation, gaps\n"
-        "- **Indicator Readings**: What each active indicator currently shows\n"
-        "- **Candlestick Patterns**: Any notable patterns visible on the chart\n"
-        "- **Volume Behavior**: Volume trends, spikes, divergences\n"
-        "- **Support & Resistance**: Key levels visible on the chart\n"
-        "- **News Context**: Implications of any recent headlines (if provided)\n\n"
-        "Be thorough and factual. Stick to what you can see and measure."
-    )
-
-    # Reuse the same data assembly as build_analysis_messages but with a
-    # different instruction at the end.
-    _, user_prompt = build_analysis_messages(
-        symbol, period, df, ind,
-        fundamentals=fundamentals,
-        earnings_info=earnings_info,
-        market_context=market_context,
-        support_levels=support_levels,
-        resistance_levels=resistance_levels,
-        strategic_period=strategic_period,
-        news_headlines=news_headlines,
-    )
-
-    # Replace the final instruction line
-    user_prompt = user_prompt.replace(
-        "\nAnalyze both the chart image(s) and the numeric data above.",
-        "\nList all technical observations from the chart image(s) and numeric data above. "
-        "Observations only — no predictions or recommendations.",
-    )
-
-    return system_prompt, user_prompt
-
-
-def build_analysis_messages(
-    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
-    fundamentals: dict | None = None,
-    earnings_info: str | None = None,
-    market_context: dict | None = None,
-    support_levels: list[float] | None = None,
-    resistance_levels: list[float] | None = None,
-    strategic_period: str | None = None,
-    news_headlines: list[dict] | None = None,
-    observations: str | None = None,
-) -> tuple[str, str]:
-    """Return (system_prompt, user_prompt) for the vision analysis."""
-    system_prompt = (
-        "You are a stock market technical analyst specializing in chart analysis. "
-        "You combine visual chart reading with quantitative indicator data to produce "
-        "actionable assessments.\n\n"
-        "Respond with exactly these sections:\n"
-        "**Trend**: Overall trend direction and strength.\n"
-        "**Support & Resistance**: Key price levels identified from the chart.\n"
-        "**Indicator Signals**: What each active indicator suggests.\n"
-        "**Candlestick Patterns**: Notable patterns visible on the chart.\n"
-        "**Outlook**: Short-term price outlook with confidence level (High / Medium / Low).\n"
-        "**Risk Factors**: Key risks to the outlook.\n\n"
-        "If signals are mixed or data is insufficient for a clear call, say so explicitly "
-        "rather than forcing a directional prediction. Be concise.\n\n"
-        "Example of the expected format and tone:\n"
-        "**Trend**: Moderate uptrend. Price is making higher highs and higher lows over the "
-        "past 3 weeks, though momentum is slowing as price approaches resistance near $185.\n"
-        "**Support & Resistance**: Support at $172 (SMA 50 confluence), resistance at $185 "
-        "(prior swing high). A break above $185 targets $192.\n"
-        "**Indicator Signals**: SMA 20 > SMA 50 (bullish). RSI at 62 — elevated but not "
-        "overbought. MACD histogram shrinking, suggesting waning momentum.\n"
-        "**Candlestick Patterns**: Small-bodied candles near resistance suggest indecision.\n"
-        "**Outlook**: Cautiously bullish. Likely consolidation near $185 before a decisive "
-        "move. Confidence: Medium.\n"
-        "**Risk Factors**: Earnings in 5 days could override technicals. Failure to hold "
-        "$172 would negate the bullish setup."
-    )
-
+) -> list[str]:
+    """Assemble the shared data lines used by both observation and analysis prompts."""
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else latest
     pct_change = ((latest["Close"] - prev["Close"]) / prev["Close"]) * 100
@@ -560,7 +488,7 @@ def build_analysis_messages(
     indicator_text = ", ".join(active) if active else "None"
 
     # --- Image description ---
-    lines = []
+    lines: list[str] = []
     if strategic_period:
         lines.append(
             f"You are provided two chart images. "
@@ -650,7 +578,7 @@ def build_analysis_messages(
         adx_val = latest.get("ADX")
         plus_di = latest.get("Plus_DI")
         minus_di = latest.get("Minus_DI")
-        if pd.notna(adx_val):
+        if pd.notna(adx_val) and pd.notna(plus_di) and pd.notna(minus_di):
             if adx_val < 20:
                 adx_label = "weak/no trend"
             elif adx_val < 25:
@@ -738,6 +666,106 @@ def build_analysis_messages(
         )
 
     lines.append(f"\nVisible indicators on chart: {indicator_text}")
+
+    return lines
+
+
+def build_observation_messages(
+    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
+    fundamentals: dict | None = None,
+    earnings_info: str | None = None,
+    market_context: dict | None = None,
+    support_levels: list[float] | None = None,
+    resistance_levels: list[float] | None = None,
+    strategic_period: str | None = None,
+    news_headlines: list[dict] | None = None,
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for the observation pass (pass 1).
+
+    Instructs the model to list factual observations only — no predictions
+    or recommendations.
+    """
+    system_prompt = (
+        "You are a stock market technical analyst. Your task is to OBSERVE and LIST "
+        "every technical signal visible on the chart and in the data. Do NOT make "
+        "predictions, recommendations, or draw conclusions.\n\n"
+        "List your observations in these categories:\n"
+        "- **Price Action**: Trend direction, higher highs/lows, consolidation, gaps\n"
+        "- **Indicator Readings**: What each active indicator currently shows\n"
+        "- **Candlestick Patterns**: Any notable patterns visible on the chart\n"
+        "- **Volume Behavior**: Volume trends, spikes, divergences\n"
+        "- **Support & Resistance**: Key levels visible on the chart\n"
+        "- **News Context**: Implications of any recent headlines (if provided)\n\n"
+        "Be thorough and factual. Stick to what you can see and measure."
+    )
+
+    lines = _build_prompt_data_lines(
+        symbol, period, df, ind,
+        fundamentals=fundamentals,
+        earnings_info=earnings_info,
+        market_context=market_context,
+        support_levels=support_levels,
+        resistance_levels=resistance_levels,
+        strategic_period=strategic_period,
+        news_headlines=news_headlines,
+    )
+    lines.append(
+        "\nList all technical observations from the chart image(s) and numeric data above. "
+        "Observations only — no predictions or recommendations."
+    )
+
+    return system_prompt, "\n".join(lines)
+
+
+def build_analysis_messages(
+    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
+    fundamentals: dict | None = None,
+    earnings_info: str | None = None,
+    market_context: dict | None = None,
+    support_levels: list[float] | None = None,
+    resistance_levels: list[float] | None = None,
+    strategic_period: str | None = None,
+    news_headlines: list[dict] | None = None,
+    observations: str | None = None,
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for the vision analysis."""
+    system_prompt = (
+        "You are a stock market technical analyst specializing in chart analysis. "
+        "You combine visual chart reading with quantitative indicator data to produce "
+        "actionable assessments.\n\n"
+        "Respond with exactly these sections:\n"
+        "**Trend**: Overall trend direction and strength.\n"
+        "**Support & Resistance**: Key price levels identified from the chart.\n"
+        "**Indicator Signals**: What each active indicator suggests.\n"
+        "**Candlestick Patterns**: Notable patterns visible on the chart.\n"
+        "**Outlook**: Short-term price outlook with confidence level (High / Medium / Low).\n"
+        "**Risk Factors**: Key risks to the outlook.\n\n"
+        "If signals are mixed or data is insufficient for a clear call, say so explicitly "
+        "rather than forcing a directional prediction. Be concise.\n\n"
+        "Example of the expected format and tone:\n"
+        "**Trend**: Moderate uptrend. Price is making higher highs and higher lows over the "
+        "past 3 weeks, though momentum is slowing as price approaches resistance near $185.\n"
+        "**Support & Resistance**: Support at $172 (SMA 50 confluence), resistance at $185 "
+        "(prior swing high). A break above $185 targets $192.\n"
+        "**Indicator Signals**: SMA 20 > SMA 50 (bullish). RSI at 62 — elevated but not "
+        "overbought. MACD histogram shrinking, suggesting waning momentum.\n"
+        "**Candlestick Patterns**: Small-bodied candles near resistance suggest indecision.\n"
+        "**Outlook**: Cautiously bullish. Likely consolidation near $185 before a decisive "
+        "move. Confidence: Medium.\n"
+        "**Risk Factors**: Earnings in 5 days could override technicals. Failure to hold "
+        "$172 would negate the bullish setup."
+    )
+
+    lines = _build_prompt_data_lines(
+        symbol, period, df, ind,
+        fundamentals=fundamentals,
+        earnings_info=earnings_info,
+        market_context=market_context,
+        support_levels=support_levels,
+        resistance_levels=resistance_levels,
+        strategic_period=strategic_period,
+        news_headlines=news_headlines,
+    )
 
     if observations:
         lines.append(
@@ -988,7 +1016,6 @@ for key, default in {
     "done": False,
     "history_saved": False,
     "strategic_chart_b64": None,
-    "analysis_phase": "observing",
     "watchlist_analyzing": False,
     "watchlist_done": False,
     "watchlist_symbols": [],
@@ -1007,7 +1034,6 @@ def _on_input_change():
     st.session_state.consensus_output = ""
     st.session_state.consensus_error = ""
     st.session_state.analysis_step = 0
-    st.session_state.analysis_phase = "observing"
     st.session_state.analysis_models = []
     st.session_state.consensus_model_name = None
     st.session_state.pop("chart_b64", None)
@@ -1109,11 +1135,10 @@ if is_single_mode:
         models = st.session_state.get("analysis_models", [])
         total = len(models)
         consensus_model = st.session_state.get("consensus_model_name")
-        analysis_phase = st.session_state.get("analysis_phase", "observing")
         if step <= total and total > 1:
-            button_label = f"Analyzing ({step}/{total} models, {analysis_phase})..."
+            button_label = f"Analyzing ({step}/{total} models)..."
         elif step <= total:
-            button_label = f"Analyzing ({analysis_phase})..."
+            button_label = "Analyzing..."
         elif consensus_model:
             button_label = "Generating consensus..."
         else:
@@ -1336,47 +1361,59 @@ if is_single_mode and symbol:
                 current_model = models[step - 1]
                 st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
 
+                observations_raw = None
+                # --- Pass 1: Observation ---
                 try:
-                    # --- Pass 1: Observation ---
-                    st.session_state.analysis_phase = "observing"
                     obs_system, obs_user = build_observation_messages(**prompt_args)
-                    with st.expander("Observations (pass 1)", expanded=False):
-                        obs_chunks = []
-                        for chunk in stream_ollama_response(
-                            current_model, obs_system, obs_user, images_b64
-                        ):
-                            obs_chunks.append(chunk)
-                        observations_text = "".join(obs_chunks)
-                        st.markdown(observations_text)
-                    observations_raw = _unescape_markdown(observations_text)
-
-                    # --- Pass 2: Synthesis ---
-                    st.session_state.analysis_phase = "synthesizing"
-                    syn_system, syn_user = build_analysis_messages(
-                        **prompt_args, observations=observations_raw,
-                    )
-                    result = st.write_stream(
-                        stream_ollama_response(
-                            current_model, syn_system, syn_user, images_b64
+                    with st.status("Pass 1/2: Observing...", expanded=False) as status:
+                        observations_text = st.write_stream(
+                            stream_ollama_response(
+                                current_model, obs_system, obs_user, images_b64
+                            )
                         )
-                    )
-                    st.session_state.ai_outputs[current_model] = result
+                        status.update(label="Pass 1/2: Observations complete", state="complete")
+                    observations_raw = _unescape_markdown(observations_text)
                 except requests.ConnectionError:
                     st.session_state.ai_errors[current_model] = (
-                        f"Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
+                        f"Observation pass: Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
                         "Make sure Ollama is running."
                     )
                 except requests.HTTPError as e:
                     st.session_state.ai_errors[current_model] = (
-                        f"Ollama returned an error: {e}"
+                        f"Observation pass: Ollama returned an error: {e}"
                     )
                 except Exception as e:
                     st.session_state.ai_errors[current_model] = (
-                        f"Unexpected error during analysis: {e}"
+                        f"Observation pass: Unexpected error: {e}"
                     )
 
+                # --- Pass 2: Synthesis (only if pass 1 succeeded) ---
+                if observations_raw is not None:
+                    try:
+                        syn_system, syn_user = build_analysis_messages(
+                            **prompt_args, observations=observations_raw,
+                        )
+                        result = st.write_stream(
+                            stream_ollama_response(
+                                current_model, syn_system, syn_user, images_b64
+                            )
+                        )
+                        st.session_state.ai_outputs[current_model] = result
+                    except requests.ConnectionError:
+                        st.session_state.ai_errors[current_model] = (
+                            f"Synthesis pass: Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
+                            "Make sure Ollama is running."
+                        )
+                    except requests.HTTPError as e:
+                        st.session_state.ai_errors[current_model] = (
+                            f"Synthesis pass: Ollama returned an error: {e}"
+                        )
+                    except Exception as e:
+                        st.session_state.ai_errors[current_model] = (
+                            f"Synthesis pass: Unexpected error: {e}"
+                        )
+
                 st.session_state.analysis_step = step + 1
-                st.session_state.analysis_phase = "observing"
 
                 # Check if we're done with vision models
                 if step == total:
