@@ -77,5 +77,5 @@ The app opens at `http://localhost:8501`. Use the sidebar to switch between two 
 | Charting | Plotly |
 | Market data | yfinance |
 | Data processing | Pandas, NumPy |
-| Image export | Kaleido |
+| Image export | Kaleido (0.2.x — self-contained, no system browser needed) |
 | AI analysis | Ollama (vision models for chart analysis, any model for consensus) |
