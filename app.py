@@ -253,28 +253,118 @@ def chart_to_base64_png(fig: go.Figure, ind: Indicators) -> str:
     return base64.b64encode(img_bytes).decode("utf-8")
 
 
-def build_analysis_prompt(symbol: str, df: pd.DataFrame, ind: Indicators) -> str:
+def build_analysis_messages(
+    symbol: str, period: str, df: pd.DataFrame, ind: Indicators
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for the vision analysis."""
+    system_prompt = (
+        "You are a stock market technical analyst specializing in chart analysis. "
+        "You combine visual chart reading with quantitative indicator data to produce "
+        "actionable assessments.\n\n"
+        "Respond with exactly these sections:\n"
+        "**Trend**: Overall trend direction and strength.\n"
+        "**Support & Resistance**: Key price levels identified from the chart.\n"
+        "**Indicator Signals**: What each active indicator suggests.\n"
+        "**Candlestick Patterns**: Notable patterns visible on the chart.\n"
+        "**Outlook**: Short-term price outlook with confidence level (High / Medium / Low).\n"
+        "**Risk Factors**: Key risks to the outlook.\n\n"
+        "If signals are mixed or data is insufficient for a clear call, say so explicitly "
+        "rather than forcing a directional prediction. Be concise."
+    )
+
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else latest
     pct_change = ((latest["Close"] - prev["Close"]) / prev["Close"]) * 100
+    avg_vol = df["Volume"].mean()
+    latest_vol = latest["Volume"]
+    vol_ratio = latest_vol / avg_vol if avg_vol > 0 else 0
 
     active = ind.active_labels()
     indicator_text = ", ".join(active) if active else "None"
 
-    return (
-        f"You are a stock market technical analyst. Analyze this candlestick chart for {symbol.upper()}.\n\n"
-        f"Key data points:\n"
-        f"- Latest close: ${latest['Close']:.2f}\n"
-        f"- Previous close: ${prev['Close']:.2f}\n"
-        f"- Change: {pct_change:+.2f}%\n"
-        f"- Period high: ${df['High'].max():.2f}\n"
-        f"- Period low: ${df['Low'].min():.2f}\n"
-        f"- Average volume: {df['Volume'].mean():,.0f}\n\n"
-        f"Visible indicators on the chart: {indicator_text}\n\n"
-        f"Analyze the chart image and the visible technical indicators. "
-        f"Identify trends, support/resistance levels, candlestick patterns, "
-        f"and indicator signals. Provide a short-term outlook. Be concise."
-    )
+    # --- Core data ---
+    lines = [
+        f"Analyze this candlestick chart for {symbol.upper()}.\n",
+        f"Timeframe: {period} (latest bar is the most recent trading day)\n",
+        "Key data points:",
+        f"- Latest close: ${latest['Close']:.2f}",
+        f"- Previous close: ${prev['Close']:.2f}",
+        f"- Change: {pct_change:+.2f}%",
+        f"- Period high: ${df['High'].max():.2f}",
+        f"- Period low: ${df['Low'].min():.2f}",
+        f"- Average volume: {avg_vol:,.0f}",
+        f"- Latest volume: {latest_vol:,.0f} ({vol_ratio:.1f}x average)",
+    ]
+
+    # --- Actual indicator values ---
+    lines.append("\nIndicator readings (latest bar):")
+    if ind.sma:
+        sma20 = latest.get("SMA_20")
+        sma50 = latest.get("SMA_50")
+        sma20_str = f"${sma20:.2f}" if pd.notna(sma20) else "N/A (insufficient data)"
+        sma50_str = f"${sma50:.2f}" if pd.notna(sma50) else "N/A (insufficient data)"
+        lines.append(f"- SMA 20: {sma20_str}, SMA 50: {sma50_str}")
+        if pd.notna(sma20) and pd.notna(sma50):
+            cross = "above" if sma20 > sma50 else "below"
+            lines.append(f"  SMA 20 is {cross} SMA 50 ({'bullish' if cross == 'above' else 'bearish'} alignment)")
+    if ind.ema:
+        ema12 = latest.get("EMA_12")
+        ema26 = latest.get("EMA_26")
+        ema12_str = f"${ema12:.2f}" if pd.notna(ema12) else "N/A"
+        ema26_str = f"${ema26:.2f}" if pd.notna(ema26) else "N/A"
+        lines.append(f"- EMA 12: {ema12_str}, EMA 26: {ema26_str}")
+        if pd.notna(ema12) and pd.notna(ema26):
+            cross = "above" if ema12 > ema26 else "below"
+            lines.append(f"  EMA 12 is {cross} EMA 26 ({'bullish' if cross == 'above' else 'bearish'} alignment)")
+    if ind.bb:
+        bb_upper = latest.get("BB_Upper")
+        bb_lower = latest.get("BB_Lower")
+        bb_mid = latest.get("BB_Mid")
+        if pd.notna(bb_upper) and pd.notna(bb_lower):
+            close = latest["Close"]
+            lines.append(f"- Bollinger Bands: Upper ${bb_upper:.2f}, Mid ${bb_mid:.2f}, Lower ${bb_lower:.2f}")
+            if close > bb_upper:
+                lines.append("  Price is ABOVE upper band (overbought / breakout)")
+            elif close < bb_lower:
+                lines.append("  Price is BELOW lower band (oversold / breakdown)")
+            else:
+                pct_bb = (close - bb_lower) / (bb_upper - bb_lower) * 100
+                lines.append(f"  Price is at {pct_bb:.0f}% of band width")
+        else:
+            lines.append("- Bollinger Bands: N/A (insufficient data)")
+    if ind.rsi:
+        rsi = latest.get("RSI")
+        if pd.notna(rsi):
+            rsi_label = " (overbought)" if rsi > 70 else " (oversold)" if rsi < 30 else ""
+            lines.append(f"- RSI (14): {rsi:.1f}{rsi_label}")
+        else:
+            lines.append("- RSI (14): N/A (insufficient data)")
+    if ind.macd:
+        macd = latest.get("MACD")
+        macd_sig = latest.get("MACD_Signal")
+        macd_hist = latest.get("MACD_Hist")
+        if pd.notna(macd) and pd.notna(macd_sig):
+            cross = "above" if macd > macd_sig else "below"
+            lines.append(f"- MACD: {macd:.4f}, Signal: {macd_sig:.4f}, Histogram: {macd_hist:.4f}")
+            lines.append(f"  MACD is {cross} signal line ({'bullish' if cross == 'above' else 'bearish'})")
+        else:
+            lines.append("- MACD: N/A (insufficient data)")
+
+    # --- Recent price action (last 5 bars) ---
+    recent = df.tail(5)
+    lines.append("\nRecent price action (last 5 bars):")
+    lines.append("Date | Open | High | Low | Close | Volume")
+    for idx, row in recent.iterrows():
+        date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+        lines.append(
+            f"{date_str} | ${row['Open']:.2f} | ${row['High']:.2f} | "
+            f"${row['Low']:.2f} | ${row['Close']:.2f} | {row['Volume']:,.0f}"
+        )
+
+    lines.append(f"\nVisible indicators on chart: {indicator_text}")
+    lines.append("\nAnalyze both the chart image and the numeric data above.")
+
+    return system_prompt, "\n".join(lines)
 
 
 @st.cache_data(show_spinner=False, ttl=30)
@@ -323,23 +413,34 @@ def _unescape_markdown(text: str) -> str:
     return text.replace("\\$", "$").replace("\\_", "_")
 
 
-def stream_ollama_response(model: str, prompt: str, image_b64: str | None = None):
-    """Generator that yields text chunks from the Ollama API."""
+def stream_ollama_response(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    image_b64: str | None = None,
+    temperature: float = 0.4,
+):
+    """Generator that yields text chunks from the Ollama /api/chat endpoint."""
+    user_message: dict = {"role": "user", "content": user_prompt}
+    if image_b64 is not None:
+        user_message["images"] = [image_b64]
     payload = {
         "model": model,
-        "prompt": prompt,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            user_message,
+        ],
         "stream": True,
+        "options": {"temperature": temperature},
     }
-    if image_b64 is not None:
-        payload["images"] = [image_b64]
     with requests.post(
-        f"{OLLAMA_BASE_URL}/api/generate", json=payload, stream=True, timeout=(10, 600)
+        f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=True, timeout=(10, 600)
     ) as resp:
         resp.raise_for_status()
         for line in resp.iter_lines():
             if line:
                 data = json.loads(line)
-                token = data.get("response", "")
+                token = data.get("message", {}).get("content", "")
                 if token:
                     yield _escape_markdown(token)
                 if data.get("done", False):
@@ -356,36 +457,50 @@ def _format_model_label(m: dict) -> str:
     return label
 
 
-def build_consensus_prompt(
+def build_consensus_messages(
     symbol: str,
     model_analyses: dict[str, str],
+    model_sizes: dict[str, str],
     df: pd.DataFrame,
     ind: Indicators,
-) -> str:
-    """Build a prompt for the consensus summarizer model."""
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for the consensus summarizer."""
+    system_prompt = (
+        "You are a financial analysis synthesizer. You combine independent technical "
+        "analyses into a balanced consensus view. Larger models (more parameters) may "
+        "provide more nuanced analysis — consider this when assessments conflict, but "
+        "do not dismiss smaller models outright.\n\n"
+        "If the analyses fundamentally disagree, say so clearly rather than "
+        "manufacturing false consensus. Rate your overall confidence honestly."
+    )
+
     latest = df.iloc[-1]
     active = ind.active_labels()
     indicator_text = ", ".join(active) if active else "None"
 
     analyses_text = ""
     for model_name, analysis in model_analyses.items():
-        analyses_text += f"\n--- {model_name} ---\n{_unescape_markdown(analysis)}\n"
+        size = model_sizes.get(model_name, "unknown size")
+        analyses_text += f"\n--- {model_name} ({size}) ---\n{_unescape_markdown(analysis)}\n"
 
-    return (
-        f"You are a financial analysis synthesizer. Below are independent technical analyses "
-        f"of a candlestick chart for {symbol.upper()} (latest close: ${latest['Close']:.2f}) "
+    model_names = ", ".join(model_analyses.keys())
+    user_prompt = (
+        f"Below are independent technical analyses of a candlestick chart for "
+        f"{symbol.upper()} (latest close: ${latest['Close']:.2f}) "
         f"with these indicators: {indicator_text}.\n\n"
         f"Individual analyses:{analyses_text}\n"
-        f"Synthesize these analyses into a consensus report with exactly these four sections. "
-        f"Refer to each model by its name (e.g. {', '.join(model_analyses.keys())}) rather than "
+        f"Synthesize these into a consensus report with exactly these sections. "
+        f"Refer to each model by its name (e.g. {model_names}) rather than "
         f"generic labels like 'Model 1'.\n\n"
         f"**Consensus Level**: Rate as Strong / Moderate / Mixed / Contradictory based on "
         f"how well the analyses agree.\n\n"
         f"**Points of Agreement**: Key findings where the analysts concur.\n\n"
         f"**Points of Disagreement**: Areas where the analysts diverge or contradict.\n\n"
         f"**Synthesized Outlook**: Your overall assessment combining all perspectives, "
-        f"noting confidence level. Be concise."
+        f"noting confidence level (High / Medium / Low). Be concise."
     )
+
+    return system_prompt, user_prompt
 
 
 # ── Streamlit UI ─────────────────────────────────────────────────────────────
@@ -579,12 +694,12 @@ if symbol:
             if step >= 1 and step <= total:
                 # Vision model analysis step
                 current_model = models[step - 1]
-                prompt = build_analysis_prompt(symbol, df, ind)
+                system_prompt, user_prompt = build_analysis_messages(symbol, period, df, ind)
 
                 st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
                 try:
                     result = st.write_stream(
-                        stream_ollama_response(current_model, prompt, image_b64)
+                        stream_ollama_response(current_model, system_prompt, user_prompt, image_b64)
                     )
                     st.session_state.ai_outputs[current_model] = result
                 except requests.ConnectionError:
@@ -621,10 +736,18 @@ if symbol:
                 # Consensus summarizer step
                 successful = st.session_state.ai_outputs
                 st.subheader("Generating Consensus...")
-                consensus_prompt = build_consensus_prompt(symbol, successful, df, ind)
+                # Build model size lookup for weighting context
+                all_model_info = fetch_ollama_models()
+                model_sizes = {
+                    m["name"]: m.get("parameter_size", "unknown")
+                    for m in all_model_info
+                }
+                consensus_sys, consensus_user = build_consensus_messages(
+                    symbol, successful, model_sizes, df, ind
+                )
                 try:
                     result = st.write_stream(
-                        stream_ollama_response(consensus_model, consensus_prompt)
+                        stream_ollama_response(consensus_model, consensus_sys, consensus_user)
                     )
                     st.session_state.consensus_output = result
                 except requests.ConnectionError:
