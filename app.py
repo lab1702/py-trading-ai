@@ -913,7 +913,6 @@ def stream_ollama_response(
             user_message,
         ],
         "stream": True,
-        "think": False,
         "options": {"temperature": temperature},
     }
     with requests.post(
@@ -938,6 +937,8 @@ def stream_ollama_response(
                     if not has_content and thinking_buf:
                         logger.info("Model %s produced only thinking output; using as fallback", model)
                         yield _escape_markdown("".join(thinking_buf))
+                    elif not has_content and not thinking_buf:
+                        logger.warning("Model %s returned done with no content or thinking tokens", model)
                     return
 
 
