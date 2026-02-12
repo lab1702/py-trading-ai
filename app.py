@@ -468,9 +468,11 @@ def build_analysis_messages(
                 lines.append("  Price is ABOVE upper band (overbought / breakout)")
             elif close < bb_lower:
                 lines.append("  Price is BELOW lower band (oversold / breakdown)")
-            else:
+            elif bb_upper != bb_lower:
                 pct_bb = (close - bb_lower) / (bb_upper - bb_lower) * 100
                 lines.append(f"  Price is at {pct_bb:.0f}% of band width")
+            else:
+                lines.append("  Price is at mid-band (bands are flat)")
         else:
             lines.append("- Bollinger Bands: N/A (insufficient data)")
     if ind.rsi:
@@ -829,6 +831,11 @@ def _on_watchlist_input_change():
     st.session_state.history_saved = False
 
 
+def _on_shared_input_change():
+    _on_input_change()
+    _on_watchlist_input_change()
+
+
 def _uppercase_symbol():
     st.session_state.symbol = st.session_state.symbol.strip().upper()
     _on_input_change()
@@ -861,10 +868,6 @@ else:
         on_change=_on_watchlist_input_change,
     )
     symbol = ""
-
-def _on_shared_input_change():
-    _on_input_change()
-    _on_watchlist_input_change()
 
 period = st.sidebar.selectbox(
     "Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
