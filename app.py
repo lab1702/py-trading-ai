@@ -458,7 +458,7 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
         _add_adx(fig, df, current_row)
 
     extra = sum([show_rsi, show_macd, show_atr, show_adx])
-    chart_height = CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT
+    chart_height = int(CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT)
 
     # Dark theme
     grid_color = "#2a2a4a"
@@ -485,7 +485,7 @@ def chart_to_base64_png(fig: go.Figure, ind: Indicators, df: pd.DataFrame) -> st
         ind.atr and df["ATR"].notna().any(),
         ind.adx and df["ADX"].notna().any(),
     ])
-    img_height = CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT
+    img_height = int(CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT)
     img_bytes = fig.to_image(format="png", width=1200, height=img_height, scale=2)
     return base64.b64encode(img_bytes).decode("utf-8")
 
