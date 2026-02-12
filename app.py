@@ -1,6 +1,8 @@
 import base64
 import json
+import os
 from dataclasses import dataclass
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -11,6 +13,16 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 OLLAMA_BASE_URL = "http://localhost:11434"
+
+STRATEGIC_PERIOD_MAP = {
+    "1mo": "1y",
+    "3mo": "2y",
+    "6mo": "2y",
+    "1y": "5y",
+    "2y": "5y",
+}
+
+ANALYSIS_HISTORY_FILE = "analysis_history.json"
 
 
 @dataclass
@@ -56,6 +68,63 @@ def fetch_company_name(symbol: str) -> str:
         return symbol.upper()
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_fundamentals(symbol: str) -> dict | None:
+    """Fetch fundamental data for a ticker symbol."""
+    try:
+        info = yf.Ticker(symbol).info
+        return {
+            "trailingPE": info.get("trailingPE"),
+            "forwardPE": info.get("forwardPE"),
+            "marketCap": info.get("marketCap"),
+            "dividendYield": info.get("dividendYield"),
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+            "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+        }
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_next_earnings(symbol: str) -> str | None:
+    """Find the next upcoming earnings date."""
+    try:
+        dates = yf.Ticker(symbol).get_earnings_dates(limit=8)
+        if dates is None or dates.empty:
+            return None
+        now = pd.Timestamp.now(tz=dates.index.tz)
+        future = dates[dates.index > now]
+        if future.empty:
+            return None
+        nearest = future.index.min()
+        days = (nearest - now).days
+        return f"in {days} days ({nearest.strftime('%Y-%m-%d')})"
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_market_context(period: str) -> dict | None:
+    """Fetch S&P 500 market context for the given period."""
+    try:
+        df = yf.Ticker("^GSPC").history(period=period)
+        if df.empty:
+            return None
+        first_close = df["Close"].iloc[0]
+        latest_close = df["Close"].iloc[-1]
+        period_return = ((latest_close - first_close) / first_close) * 100
+        return {
+            "latest_close": float(latest_close),
+            "period_return": float(period_return),
+            "period_high": float(df["High"].max()),
+            "period_low": float(df["Low"].min()),
+        }
+    except Exception:
+        return None
+
+
 def _compute_indicators(df: pd.DataFrame) -> None:
     """Compute technical indicator columns on the dataframe in-place."""
     close = df["Close"]
@@ -90,50 +159,84 @@ def _compute_indicators(df: pd.DataFrame) -> None:
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
 
+def compute_support_resistance(
+    df: pd.DataFrame, window: int = 5, n_levels: int = 3
+) -> tuple[list[float], list[float]]:
+    """Compute support and resistance levels from local extrema."""
+    highs = df["High"]
+    lows = df["Low"]
+
+    resistance_pts: list[float] = []
+    support_pts: list[float] = []
+
+    for i in range(window, len(df) - window):
+        segment_high = highs.iloc[i - window:i + window + 1]
+        if highs.iloc[i] == segment_high.max():
+            resistance_pts.append(float(highs.iloc[i]))
+        segment_low = lows.iloc[i - window:i + window + 1]
+        if lows.iloc[i] == segment_low.min():
+            support_pts.append(float(lows.iloc[i]))
+
+    def cluster_levels(points: list[float]) -> list[float]:
+        if not points:
+            return []
+        sorted_pts = sorted(points)
+        clusters: list[list[float]] = [[sorted_pts[0]]]
+        for p in sorted_pts[1:]:
+            mean_last = sum(clusters[-1]) / len(clusters[-1])
+            if mean_last != 0 and abs(p - mean_last) / mean_last <= 0.01:
+                clusters[-1].append(p)
+            else:
+                clusters.append([p])
+        clusters.sort(key=len, reverse=True)
+        return [sum(c) / len(c) for c in clusters[:n_levels]]
+
+    return cluster_levels(support_pts), cluster_levels(resistance_pts)
+
+
 def _add_overlays(fig: go.Figure, df: pd.DataFrame, ind: Indicators) -> None:
     """Add overlay indicator traces to the price row."""
     if ind.sma:
         fig.add_trace(
             go.Scatter(x=df.index, y=df["SMA_20"], name="SMA 20",
-                       line=dict(width=1, color="orange")),
+                       line=dict(width=1, color="#ff9800")),
             row=1, col=1,
         )
         fig.add_trace(
             go.Scatter(x=df.index, y=df["SMA_50"], name="SMA 50",
-                       line=dict(width=1, color="purple")),
+                       line=dict(width=1, color="#e040fb")),
             row=1, col=1,
         )
 
     if ind.ema:
         fig.add_trace(
             go.Scatter(x=df.index, y=df["EMA_12"], name="EMA 12",
-                       line=dict(width=1, color="cyan", dash="dot")),
+                       line=dict(width=1, color="#00e5ff", dash="dot")),
             row=1, col=1,
         )
         fig.add_trace(
             go.Scatter(x=df.index, y=df["EMA_26"], name="EMA 26",
-                       line=dict(width=1, color="magenta", dash="dot")),
+                       line=dict(width=1, color="#ff4081", dash="dot")),
             row=1, col=1,
         )
 
     if ind.bb:
         fig.add_trace(
             go.Scatter(x=df.index, y=df["BB_Upper"], name="BB Upper",
-                       line=dict(width=1, color="gray", dash="dash")),
+                       line=dict(width=1, color="#78909c", dash="dash")),
             row=1, col=1,
         )
         fig.add_trace(
             go.Scatter(x=df.index, y=df["BB_Lower"], name="BB Lower",
-                       line=dict(width=1, color="gray", dash="dash"),
-                       fill="tonexty", fillcolor="rgba(128,128,128,0.1)"),
+                       line=dict(width=1, color="#78909c", dash="dash"),
+                       fill="tonexty", fillcolor="rgba(120,144,156,0.1)"),
             row=1, col=1,
         )
 
 
-
 def _add_volume(fig: go.Figure, df: pd.DataFrame) -> None:
     """Add volume bar chart to row 2."""
-    vol_colors = ["green" if c >= o else "red"
+    vol_colors = ["#26a69a" if c >= o else "#ef5350"
                   for c, o in zip(df["Close"], df["Open"])]
     fig.add_trace(
         go.Bar(x=df.index, y=df["Volume"], name="Volume",
@@ -146,12 +249,12 @@ def _add_rsi(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
     """Add RSI sub-chart at the given row."""
     fig.add_trace(
         go.Scatter(x=df.index, y=df["RSI"], name="RSI",
-                   line=dict(width=1, color="purple")),
+                   line=dict(width=1, color="#e040fb")),
         row=row, col=1,
     )
-    fig.add_hline(y=70, line_dash="dash", line_color="red",
+    fig.add_hline(y=70, line_dash="dash", line_color="#ef5350",
                   line_width=1, row=row, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green",
+    fig.add_hline(y=30, line_dash="dash", line_color="#26a69a",
                   line_width=1, row=row, col=1)
     fig.update_yaxes(range=[0, 100], row=row, col=1)
 
@@ -160,15 +263,15 @@ def _add_macd(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
     """Add MACD sub-chart at the given row."""
     fig.add_trace(
         go.Scatter(x=df.index, y=df["MACD"], name="MACD",
-                   line=dict(width=1, color="blue")),
+                   line=dict(width=1, color="#42a5f5")),
         row=row, col=1,
     )
     fig.add_trace(
         go.Scatter(x=df.index, y=df["MACD_Signal"], name="Signal",
-                   line=dict(width=1, color="orange")),
+                   line=dict(width=1, color="#ff9800")),
         row=row, col=1,
     )
-    colors = ["green" if v >= 0 else "red" for v in df["MACD_Hist"].fillna(0)]
+    colors = ["#26a69a" if v >= 0 else "#ef5350" for v in df["MACD_Hist"].fillna(0)]
     fig.add_trace(
         go.Bar(x=df.index, y=df["MACD_Hist"], name="Histogram",
                marker_color=colors, showlegend=False),
@@ -237,11 +340,20 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
     extra = (1 if ind.rsi else 0) + (1 if ind.macd else 0)
     chart_height = base_height + extra * sub_chart_height
 
+    # Dark theme
+    grid_color = "#2a2a4a"
     fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#1a1a2e",
+        plot_bgcolor="#16213e",
+        font=dict(size=14),
         xaxis_rangeslider_visible=False,
         height=chart_height,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
+    # Apply grid color to all axes
+    fig.update_xaxes(gridcolor=grid_color)
+    fig.update_yaxes(gridcolor=grid_color)
 
     return fig
 
@@ -254,7 +366,13 @@ def chart_to_base64_png(fig: go.Figure, ind: Indicators) -> str:
 
 
 def build_analysis_messages(
-    symbol: str, period: str, df: pd.DataFrame, ind: Indicators
+    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
+    fundamentals: dict | None = None,
+    earnings_info: str | None = None,
+    market_context: dict | None = None,
+    support_levels: list[float] | None = None,
+    resistance_levels: list[float] | None = None,
+    strategic_period: str | None = None,
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the vision analysis."""
     system_prompt = (
@@ -269,7 +387,19 @@ def build_analysis_messages(
         "**Outlook**: Short-term price outlook with confidence level (High / Medium / Low).\n"
         "**Risk Factors**: Key risks to the outlook.\n\n"
         "If signals are mixed or data is insufficient for a clear call, say so explicitly "
-        "rather than forcing a directional prediction. Be concise."
+        "rather than forcing a directional prediction. Be concise.\n\n"
+        "Example of the expected format and tone:\n"
+        "**Trend**: Moderate uptrend. Price is making higher highs and higher lows over the "
+        "past 3 weeks, though momentum is slowing as price approaches resistance near $185.\n"
+        "**Support & Resistance**: Support at $172 (SMA 50 confluence), resistance at $185 "
+        "(prior swing high). A break above $185 targets $192.\n"
+        "**Indicator Signals**: SMA 20 > SMA 50 (bullish). RSI at 62 — elevated but not "
+        "overbought. MACD histogram shrinking, suggesting waning momentum.\n"
+        "**Candlestick Patterns**: Small-bodied candles near resistance suggest indecision.\n"
+        "**Outlook**: Cautiously bullish. Likely consolidation near $185 before a decisive "
+        "move. Confidence: Medium.\n"
+        "**Risk Factors**: Earnings in 5 days could override technicals. Failure to hold "
+        "$172 would negate the bullish setup."
     )
 
     latest = df.iloc[-1]
@@ -282,8 +412,19 @@ def build_analysis_messages(
     active = ind.active_labels()
     indicator_text = ", ".join(active) if active else "None"
 
+    # --- Image description ---
+    lines = []
+    if strategic_period:
+        lines.append(
+            f"You are provided two chart images. "
+            f"Image 1: {period} chart (primary analysis). "
+            f"Image 2: {strategic_period} chart (strategic context).\n"
+        )
+    else:
+        lines.append(f"You are provided one chart image for the {period} timeframe.\n")
+
     # --- Core data ---
-    lines = [
+    lines += [
         f"Analyze this candlestick chart for {symbol.upper()}.\n",
         f"Timeframe: {period} (latest bar is the most recent trading day)\n",
         "Key data points:",
@@ -350,6 +491,59 @@ def build_analysis_messages(
         else:
             lines.append("- MACD: N/A (insufficient data)")
 
+    # --- Fundamental context ---
+    has_fundamentals = fundamentals and any(v is not None for v in fundamentals.values())
+    if has_fundamentals:
+        lines.append("\nFundamental context:")
+        if fundamentals.get("sector"):
+            lines.append(f"- Sector: {fundamentals['sector']}, Industry: {fundamentals.get('industry', 'N/A')}")
+        if fundamentals.get("trailingPE") is not None:
+            lines.append(f"- Trailing P/E: {fundamentals['trailingPE']:.1f}")
+        if fundamentals.get("forwardPE") is not None:
+            lines.append(f"- Forward P/E: {fundamentals['forwardPE']:.1f}")
+        if fundamentals.get("marketCap") is not None:
+            mc = fundamentals["marketCap"]
+            if mc >= 1e12:
+                lines.append(f"- Market cap: ${mc/1e12:.2f}T")
+            elif mc >= 1e9:
+                lines.append(f"- Market cap: ${mc/1e9:.2f}B")
+            else:
+                lines.append(f"- Market cap: ${mc/1e6:.0f}M")
+        if fundamentals.get("dividendYield") is not None:
+            lines.append(f"- Dividend yield: {fundamentals['dividendYield']*100:.2f}%")
+        if fundamentals.get("fiftyTwoWeekHigh") is not None and fundamentals.get("fiftyTwoWeekLow") is not None:
+            lines.append(
+                f"- 52-week range: ${fundamentals['fiftyTwoWeekLow']:.2f} "
+                f"- ${fundamentals['fiftyTwoWeekHigh']:.2f}"
+            )
+
+    # --- Earnings ---
+    if earnings_info:
+        lines.append(f"\nUpcoming earnings: {earnings_info}")
+        lines.append("  Note: Earnings announcements can cause significant price gaps regardless of technical setup.")
+
+    # --- Market context ---
+    if market_context:
+        lines.append("\nMarket context (S&P 500):")
+        lines.append(f"- S&P 500 latest: {market_context['latest_close']:,.2f}")
+        lines.append(f"- S&P 500 period return: {market_context['period_return']:+.2f}%")
+        lines.append(
+            f"- S&P 500 period range: {market_context['period_low']:,.2f} "
+            f"- {market_context['period_high']:,.2f}"
+        )
+
+    # --- Support/Resistance ---
+    if support_levels:
+        lines.append(
+            f"\nAlgorithmic support levels: "
+            + ", ".join(f"${lvl:.2f}" for lvl in support_levels)
+        )
+    if resistance_levels:
+        lines.append(
+            "Algorithmic resistance levels: "
+            + ", ".join(f"${lvl:.2f}" for lvl in resistance_levels)
+        )
+
     # --- Recent price action (last 5 bars) ---
     recent = df.tail(5)
     lines.append("\nRecent price action (last 5 bars):")
@@ -362,7 +556,7 @@ def build_analysis_messages(
         )
 
     lines.append(f"\nVisible indicators on chart: {indicator_text}")
-    lines.append("\nAnalyze both the chart image and the numeric data above.")
+    lines.append("\nAnalyze both the chart image(s) and the numeric data above.")
 
     return system_prompt, "\n".join(lines)
 
@@ -417,13 +611,13 @@ def stream_ollama_response(
     model: str,
     system_prompt: str,
     user_prompt: str,
-    image_b64: str | None = None,
+    images_b64: list[str] | None = None,
     temperature: float = 0.4,
 ):
     """Generator that yields text chunks from the Ollama /api/chat endpoint."""
     user_message: dict = {"role": "user", "content": user_prompt}
-    if image_b64 is not None:
-        user_message["images"] = [image_b64]
+    if images_b64:
+        user_message["images"] = images_b64
     payload = {
         "model": model,
         "messages": [
@@ -503,16 +697,113 @@ def build_consensus_messages(
     return system_prompt, user_prompt
 
 
+def build_watchlist_prompt(
+    symbol: str, df: pd.DataFrame, ind: Indicators
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for a brief watchlist scan."""
+    system_prompt = (
+        "You are a stock screener assistant. Provide a brief, structured assessment "
+        "of the chart. Be direct and concise — this is a quick scan, not a deep analysis."
+    )
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else latest
+    pct_change = ((latest["Close"] - prev["Close"]) / prev["Close"]) * 100
+    avg_vol = df["Volume"].mean()
+    latest_vol = latest["Volume"]
+    vol_ratio = latest_vol / avg_vol if avg_vol > 0 else 0
+
+    lines = [
+        f"Quick scan for {symbol.upper()}.\n",
+        f"- Close: ${latest['Close']:.2f} ({pct_change:+.2f}%)",
+        f"- Period high/low: ${df['High'].max():.2f} / ${df['Low'].min():.2f}",
+        f"- Volume: {latest_vol:,.0f} ({vol_ratio:.1f}x avg)",
+    ]
+
+    if ind.sma:
+        sma20 = latest.get("SMA_20")
+        sma50 = latest.get("SMA_50")
+        if pd.notna(sma20) and pd.notna(sma50):
+            lines.append(f"- SMA 20: ${sma20:.2f}, SMA 50: ${sma50:.2f}")
+    if ind.rsi:
+        rsi = latest.get("RSI")
+        if pd.notna(rsi):
+            lines.append(f"- RSI: {rsi:.1f}")
+    if ind.macd:
+        macd = latest.get("MACD")
+        macd_sig = latest.get("MACD_Signal")
+        if pd.notna(macd) and pd.notna(macd_sig):
+            lines.append(f"- MACD: {macd:.4f}, Signal: {macd_sig:.4f}")
+
+    lines.append(
+        "\nRespond with exactly:\n"
+        "**Trend**: (Up / Down / Sideways)\n"
+        "**Confidence**: (High / Medium / Low)\n"
+        "**Key Signals**: 2-3 bullet points\n"
+        "**Outlook**: One sentence"
+    )
+
+    return system_prompt, "\n".join(lines)
+
+
+def save_analysis(
+    symbol: str, period: str, models: list[str],
+    analyses: dict[str, str], consensus: str,
+) -> None:
+    """Append an analysis entry to the history file."""
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "symbol": symbol.upper(),
+        "period": period,
+        "models": models,
+        "analyses": {k: _unescape_markdown(v) for k, v in analyses.items()},
+        "consensus": _unescape_markdown(consensus) if consensus else "",
+    }
+    history: list[dict] = []
+    if os.path.exists(ANALYSIS_HISTORY_FILE):
+        try:
+            with open(ANALYSIS_HISTORY_FILE, "r") as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            history = []
+    history.append(entry)
+    with open(ANALYSIS_HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
+
+
+def load_analysis_history(symbol: str, limit: int = 5) -> list[dict]:
+    """Load recent analysis history for a symbol."""
+    if not os.path.exists(ANALYSIS_HISTORY_FILE):
+        return []
+    try:
+        with open(ANALYSIS_HISTORY_FILE, "r") as f:
+            history = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    filtered = [h for h in history if h.get("symbol") == symbol.upper()]
+    return filtered[-limit:]
+
+
 # ── Streamlit UI ─────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Stock Chart AI Analyzer", layout="wide")
 st.title("Stock Chart AI Analyzer")
 
 # State initialization
-if "analyzing" not in st.session_state:
-    st.session_state.analyzing = False
-if "done" not in st.session_state:
-    st.session_state.done = False
+for key, default in {
+    "analyzing": False,
+    "done": False,
+    "history_saved": False,
+    "strategic_chart_b64": None,
+    "watchlist_analyzing": False,
+    "watchlist_done": False,
+    "watchlist_symbols": [],
+    "watchlist_step": 0,
+    "watchlist_results": {},
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
 
 def _on_input_change():
     """Clear 'done' state and stale output/error when any input changes."""
@@ -525,19 +816,60 @@ def _on_input_change():
     st.session_state.analysis_models = []
     st.session_state.consensus_model_name = None
     st.session_state.pop("chart_b64", None)
+    st.session_state.strategic_chart_b64 = None
+    st.session_state.history_saved = False
+
+
+def _on_watchlist_input_change():
+    """Clear watchlist results when inputs change."""
+    st.session_state.watchlist_done = False
+    st.session_state.watchlist_results = {}
+    st.session_state.watchlist_step = 0
+    st.session_state.watchlist_symbols = []
+    st.session_state.history_saved = False
+
 
 def _uppercase_symbol():
     st.session_state.symbol = st.session_state.symbol.strip().upper()
     _on_input_change()
 
-locked = st.session_state.analyzing
 
-# Sidebar: symbol & period at the top
-symbol = st.sidebar.text_input("Stock symbol", key="symbol", max_chars=10,
-                               placeholder="e.g. AAPL", on_change=_uppercase_symbol,
-                               disabled=locked)
-period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-                              index=2, on_change=_on_input_change, disabled=locked)
+locked = st.session_state.analyzing or st.session_state.watchlist_analyzing
+
+# Sidebar: mode selection
+mode = st.sidebar.radio(
+    "Mode",
+    ["Single Symbol", "Watchlist"],
+    horizontal=True,
+    disabled=locked,
+)
+is_single_mode = mode == "Single Symbol"
+
+# Sidebar: symbol input
+if is_single_mode:
+    symbol = st.sidebar.text_input(
+        "Stock symbol", key="symbol", max_chars=10,
+        placeholder="e.g. AAPL", on_change=_uppercase_symbol,
+        disabled=locked,
+    )
+else:
+    watchlist_text = st.sidebar.text_area(
+        "Symbols (comma or newline separated)",
+        key="watchlist_text",
+        placeholder="AAPL, MSFT, GOOGL\nAMZN, TSLA",
+        disabled=locked,
+        on_change=_on_watchlist_input_change,
+    )
+    symbol = ""
+
+def _on_period_change():
+    _on_input_change()
+    _on_watchlist_input_change()
+
+period = st.sidebar.selectbox(
+    "Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
+    index=2, on_change=_on_period_change, disabled=locked,
+)
 
 # Sidebar: indicator toggles
 st.sidebar.header("Technical Indicators")
@@ -560,25 +892,7 @@ ind = Indicators(
     macd=show_macd,
 )
 
-# Sidebar: analyze button
-if st.session_state.analyzing:
-    step = st.session_state.get("analysis_step", 0)
-    models = st.session_state.get("analysis_models", [])
-    total = len(models)
-    consensus_model = st.session_state.get("consensus_model_name")
-    if step <= total and total > 1:
-        button_label = f"Analyzing ({step}/{total} models)..."
-    elif step <= total:
-        button_label = "Analyzing..."
-    elif consensus_model:
-        button_label = "Generating consensus..."
-    else:
-        button_label = "Analyzing..."
-elif st.session_state.done:
-    button_label = "Done"
-else:
-    button_label = "Analyze with AI"
-
+# Sidebar: model selection + action button
 st.sidebar.divider()
 available_models = fetch_ollama_models()
 vision_models = [m for m in available_models if "vision" in m.get("capabilities", [])]
@@ -586,86 +900,169 @@ vision_models = [m for m in available_models if "vision" in m.get("capabilities"
 selected_vision_names: list[str] = []
 selected_consensus_model: str | None = None
 
-if vision_models:
-    vision_labels = {m["name"]: _format_model_label(m) for m in vision_models}
-    vision_names = list(vision_labels.keys())
-
-    if "selected_vision" not in st.session_state:
-        st.session_state.selected_vision = []
-
-    all_selected = len(vision_names) > 0 and set(st.session_state.selected_vision) == set(vision_names)
-    st.session_state.select_all_vision = all_selected
-
-    def _toggle_select_all():
-        if st.session_state.select_all_vision:
-            st.session_state.selected_vision = list(vision_names)
+if is_single_mode:
+    # ── Single mode button label ──
+    if st.session_state.analyzing:
+        step = st.session_state.get("analysis_step", 0)
+        models = st.session_state.get("analysis_models", [])
+        total = len(models)
+        consensus_model = st.session_state.get("consensus_model_name")
+        if step <= total and total > 1:
+            button_label = f"Analyzing ({step}/{total} models)..."
+        elif step <= total:
+            button_label = "Analyzing..."
+        elif consensus_model:
+            button_label = "Generating consensus..."
         else:
+            button_label = "Analyzing..."
+    elif st.session_state.done:
+        button_label = "Done"
+    else:
+        button_label = "Analyze with AI"
+
+    if vision_models:
+        vision_labels = {m["name"]: _format_model_label(m) for m in vision_models}
+        vision_names = list(vision_labels.keys())
+
+        if "selected_vision" not in st.session_state:
             st.session_state.selected_vision = []
-        _on_input_change()
 
-    st.sidebar.checkbox(
-        "Select all vision models",
-        key="select_all_vision",
-        disabled=locked,
-        on_change=_toggle_select_all,
-    )
-    selected_vision_names = st.sidebar.multiselect(
-        "Vision models",
-        options=vision_names,
-        key="selected_vision",
-        format_func=lambda n: vision_labels[n],
-        on_change=_on_input_change,
-        disabled=locked,
-    )
+        all_selected = len(vision_names) > 0 and set(st.session_state.selected_vision) == set(vision_names)
+        st.session_state.select_all_vision = all_selected
+
+        def _toggle_select_all():
+            if st.session_state.select_all_vision:
+                st.session_state.selected_vision = list(vision_names)
+            else:
+                st.session_state.selected_vision = []
+            _on_input_change()
+
+        st.sidebar.checkbox(
+            "Select all vision models",
+            key="select_all_vision",
+            disabled=locked,
+            on_change=_toggle_select_all,
+        )
+        selected_vision_names = st.sidebar.multiselect(
+            "Vision models",
+            options=vision_names,
+            key="selected_vision",
+            format_func=lambda n: vision_labels[n],
+            on_change=_on_input_change,
+            disabled=locked,
+        )
+    else:
+        st.sidebar.warning("No vision-capable models found in Ollama.")
+
+    if available_models:
+        all_labels = {m["name"]: _format_model_label(m) for m in available_models}
+        all_names = list(all_labels.keys())
+        consensus_enabled = len(selected_vision_names) >= 2
+        consensus_selection = st.sidebar.selectbox(
+            "Consensus model",
+            options=[None] + all_names,
+            index=0,
+            format_func=lambda n: "Select a model..." if n is None else all_labels[n],
+            on_change=_on_input_change,
+            disabled=locked or not consensus_enabled,
+            help="Summarizes analyses from multiple vision models. Requires 2+ vision models selected.",
+        )
+        if consensus_enabled and consensus_selection is not None:
+            selected_consensus_model = consensus_selection
+
+    needs_consensus = len(selected_vision_names) >= 2 and selected_consensus_model is None
+    button_disabled = locked or not symbol or not selected_vision_names or needs_consensus or st.session_state.done
+
+    if st.sidebar.button(
+        button_label,
+        type="primary",
+        disabled=button_disabled,
+        width="stretch",
+    ):
+        st.session_state.analyzing = True
+        st.session_state.analysis_step = 1
+        st.session_state.analysis_models = list(selected_vision_names)
+        st.session_state.consensus_model_name = selected_consensus_model
+        st.session_state.ai_outputs = {}
+        st.session_state.ai_errors = {}
+        st.session_state.consensus_output = ""
+        st.session_state.consensus_error = ""
+        st.session_state.history_saved = False
+        st.rerun()
+
 else:
-    st.sidebar.warning("No vision-capable models found in Ollama.")
+    # ── Watchlist mode button label ──
+    if st.session_state.watchlist_analyzing:
+        wl_step = st.session_state.get("watchlist_step", 0)
+        wl_total = len(st.session_state.get("watchlist_symbols", []))
+        button_label = f"Scanning ({wl_step}/{wl_total} symbols)..."
+    elif st.session_state.watchlist_done:
+        button_label = "Done"
+    else:
+        button_label = "Scan Watchlist"
 
-if available_models:
-    all_labels = {m["name"]: _format_model_label(m) for m in available_models}
-    all_names = list(all_labels.keys())
-    consensus_enabled = len(selected_vision_names) >= 2
-    consensus_selection = st.sidebar.selectbox(
-        "Consensus model",
-        options=[None] + all_names,
-        index=0,
-        format_func=lambda n: "Select a model..." if n is None else all_labels[n],
-        on_change=_on_input_change,
-        disabled=locked or not consensus_enabled,
-        help="Summarizes analyses from multiple vision models. Requires 2+ vision models selected.",
+    selected_watchlist_model: str | None = None
+    if vision_models:
+        vision_labels = {m["name"]: _format_model_label(m) for m in vision_models}
+        vision_names = list(vision_labels.keys())
+        selected_watchlist_model = st.sidebar.selectbox(
+            "Vision model",
+            options=[None] + vision_names,
+            index=0,
+            format_func=lambda n: "Select a model..." if n is None else vision_labels[n],
+            disabled=locked,
+        )
+    else:
+        st.sidebar.warning("No vision-capable models found in Ollama.")
+
+    raw_symbols = st.session_state.get("watchlist_text", "")
+    parsed_symbols = [
+        s.strip().upper()
+        for s in raw_symbols.replace("\n", ",").split(",")
+        if s.strip()
+    ]
+    wl_button_disabled = (
+        locked
+        or not parsed_symbols
+        or not selected_watchlist_model
+        or st.session_state.watchlist_done
     )
-    if consensus_enabled and consensus_selection is not None:
-        selected_consensus_model = consensus_selection
 
-needs_consensus = len(selected_vision_names) >= 2 and selected_consensus_model is None
-button_disabled = locked or not symbol or not selected_vision_names or needs_consensus or st.session_state.done
+    if st.sidebar.button(
+        button_label,
+        type="primary",
+        disabled=wl_button_disabled,
+        width="stretch",
+    ):
+        st.session_state.watchlist_analyzing = True
+        st.session_state.watchlist_step = 1
+        st.session_state.watchlist_symbols = parsed_symbols
+        st.session_state.watchlist_results = {}
+        st.session_state.watchlist_model = selected_watchlist_model
+        st.session_state.history_saved = False
+        st.rerun()
 
-if st.sidebar.button(
-    button_label,
-    type="primary",
-    disabled=button_disabled,
-    width="stretch",
-):
-    st.session_state.analyzing = True
-    st.session_state.analysis_step = 1
-    st.session_state.analysis_models = list(selected_vision_names)
-    st.session_state.consensus_model_name = selected_consensus_model
-    st.session_state.ai_outputs = {}
-    st.session_state.ai_errors = {}
-    st.session_state.consensus_output = ""
-    st.session_state.consensus_error = ""
-    st.rerun()
 
-if symbol:
+# ── Main Content ─────────────────────────────────────────────────────────────
+
+if is_single_mode and symbol:
     with st.spinner("Fetching market data..."):
         df = fetch_stock_data(symbol, period)
         company_name = fetch_company_name(symbol)
+        fundamentals = fetch_fundamentals(symbol)
+        earnings_info = fetch_next_earnings(symbol)
+        market_ctx = fetch_market_context(period)
 
     if df is None or df.empty:
         st.error(f"No data found for **{symbol}**. Check the symbol and try again.")
     else:
+        support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
         fig = build_candlestick_chart(df, symbol, ind, title=chart_title)
         st.plotly_chart(fig, width="stretch")
+
+        # Determine strategic period
+        strategic_period = STRATEGIC_PERIOD_MAP.get(period)
 
         if st.session_state.analyzing:
             step = st.session_state.get("analysis_step", 0)
@@ -673,7 +1070,7 @@ if symbol:
             consensus_model = st.session_state.get("consensus_model_name")
             total = len(models)
 
-            # Capture chart image once on first step
+            # Capture chart image(s) once on first step
             if "chart_b64" not in st.session_state:
                 with st.spinner("Capturing chart..."):
                     try:
@@ -681,25 +1078,62 @@ if symbol:
                     except Exception as e:
                         st.session_state.analyzing = False
                         st.session_state.done = True
-                        st.session_state.ai_errors["_chart"] = f"Chart export failed: {e}"
+                        st.session_state.ai_errors = {"_chart": f"Chart export failed: {e}"}
                         st.rerun()
+
+            # Capture strategic chart once (None = not attempted, False = failed)
+            if (
+                strategic_period
+                and st.session_state.strategic_chart_b64 is None
+                and "chart_b64" in st.session_state
+            ):
+                try:
+                    strategic_df = fetch_stock_data(symbol, strategic_period)
+                    if strategic_df is not None and not strategic_df.empty:
+                        strategic_title = f"{company_name} ({symbol.upper()}) - {strategic_period}"
+                        strategic_fig = build_candlestick_chart(
+                            strategic_df, symbol, ind, title=strategic_title
+                        )
+                        st.session_state.strategic_chart_b64 = chart_to_base64_png(
+                            strategic_fig, ind
+                        )
+                    else:
+                        st.session_state.strategic_chart_b64 = False
+                except Exception:
+                    st.session_state.strategic_chart_b64 = False
 
             if "chart_b64" not in st.session_state:
                 st.session_state.analyzing = False
                 st.session_state.done = True
                 st.rerun()
 
-            image_b64 = st.session_state.chart_b64
+            # Build image list
+            images_b64 = [st.session_state.chart_b64]
+            actual_strategic = strategic_period
+            if st.session_state.strategic_chart_b64:
+                images_b64.append(st.session_state.strategic_chart_b64)
+            else:
+                actual_strategic = None
 
             if step >= 1 and step <= total:
                 # Vision model analysis step
                 current_model = models[step - 1]
-                system_prompt, user_prompt = build_analysis_messages(symbol, period, df, ind)
+                system_prompt, user_prompt = build_analysis_messages(
+                    symbol, period, df, ind,
+                    fundamentals=fundamentals,
+                    earnings_info=earnings_info,
+                    market_context=market_ctx,
+                    support_levels=support_levels,
+                    resistance_levels=resistance_levels,
+                    strategic_period=actual_strategic,
+                )
 
                 st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
                 try:
                     result = st.write_stream(
-                        stream_ollama_response(current_model, system_prompt, user_prompt, image_b64)
+                        stream_ollama_response(
+                            current_model, system_prompt, user_prompt, images_b64
+                        )
                     )
                     st.session_state.ai_outputs[current_model] = result
                 except requests.ConnectionError:
@@ -725,7 +1159,7 @@ if symbol:
                         # Move to consensus step
                         st.rerun()
                     else:
-                        # Skip consensus: single model, no consensus model, or not enough successes
+                        # Skip consensus
                         st.session_state.analyzing = False
                         st.session_state.done = True
                         st.rerun()
@@ -736,7 +1170,6 @@ if symbol:
                 # Consensus summarizer step
                 successful = st.session_state.ai_outputs
                 st.subheader("Generating Consensus...")
-                # Build model size lookup for weighting context
                 all_model_info = fetch_ollama_models()
                 model_sizes = {
                     m["name"]: m.get("parameter_size", "unknown")
@@ -804,3 +1237,112 @@ if symbol:
             # Show chart export error if any
             if ai_errors.get("_chart"):
                 st.error(ai_errors["_chart"])
+
+            # Export analysis as Markdown
+            if ai_outputs:
+                md_parts = [f"# {symbol.upper()} Analysis ({period})\n"]
+                md_parts.append(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+                for model_name in st.session_state.get("analysis_models", []):
+                    if model_name in ai_outputs:
+                        md_parts.append(f"\n## {model_name}\n")
+                        md_parts.append(_unescape_markdown(ai_outputs[model_name]))
+                if consensus_output:
+                    md_parts.append("\n## Consensus Summary\n")
+                    md_parts.append(_unescape_markdown(consensus_output))
+                md_text = "\n".join(md_parts)
+                date_str = datetime.now().strftime("%Y%m%d")
+                st.download_button(
+                    "Download Analysis",
+                    data=md_text,
+                    file_name=f"{symbol.upper()}_analysis_{date_str}.md",
+                    mime="text/markdown",
+                )
+
+            # Save to history (once)
+            if ai_outputs and not st.session_state.history_saved:
+                save_analysis(
+                    symbol, period,
+                    st.session_state.get("analysis_models", []),
+                    ai_outputs,
+                    consensus_output,
+                )
+                st.session_state.history_saved = True
+
+            # Show analysis history
+            history = load_analysis_history(symbol)
+            if history:
+                with st.expander("Analysis History", expanded=False):
+                    for entry in reversed(history):
+                        ts = entry.get("timestamp", "")
+                        models_str = ", ".join(entry.get("models", []))
+                        st.markdown(f"**{ts[:16]}** — {entry.get('period', '')} — {models_str}")
+                        for m_name, m_analysis in entry.get("analyses", {}).items():
+                            st.markdown(f"*{m_name}:*")
+                            st.markdown(_escape_markdown(m_analysis))
+                        if entry.get("consensus"):
+                            st.markdown("*Consensus:*")
+                            st.markdown(_escape_markdown(entry["consensus"]))
+                        st.divider()
+
+elif not is_single_mode:
+    # ── Watchlist Mode ───────────────────────────────────────────────────────
+    if st.session_state.watchlist_analyzing:
+        wl_symbols = st.session_state.watchlist_symbols
+        wl_step = st.session_state.watchlist_step
+        wl_total = len(wl_symbols)
+        wl_model = st.session_state.get("watchlist_model")
+
+        if wl_step >= 1 and wl_step <= wl_total:
+            current_sym = wl_symbols[wl_step - 1]
+            st.info(f"Scanning {current_sym} ({wl_step}/{wl_total})...")
+
+            try:
+                wl_df = fetch_stock_data(current_sym, period)
+                wl_company = fetch_company_name(current_sym)
+
+                if wl_df is None or wl_df.empty:
+                    st.session_state.watchlist_results[current_sym] = {
+                        "error": f"No data found for {current_sym}",
+                    }
+                else:
+                    wl_title = f"{wl_company} ({current_sym})"
+                    wl_fig = build_candlestick_chart(wl_df, current_sym, ind, title=wl_title)
+                    wl_img = chart_to_base64_png(wl_fig, ind)
+                    sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df, ind)
+                    chunks = []
+                    for chunk in stream_ollama_response(
+                        wl_model, sys_prompt, usr_prompt, [wl_img]
+                    ):
+                        chunks.append(chunk)
+                    analysis_text = "".join(chunks)
+
+                    latest_price = wl_df["Close"].iloc[-1]
+                    st.session_state.watchlist_results[current_sym] = {
+                        "analysis": analysis_text,
+                        "price": float(latest_price),
+                        "company": wl_company,
+                    }
+
+            except Exception as e:
+                st.session_state.watchlist_results[current_sym] = {
+                    "error": f"Error analyzing {current_sym}: {e}",
+                }
+
+            st.session_state.watchlist_step = wl_step + 1
+            if wl_step == wl_total:
+                st.session_state.watchlist_analyzing = False
+                st.session_state.watchlist_done = True
+            st.rerun()
+
+    if st.session_state.watchlist_done:
+        st.subheader("Watchlist Scan Results")
+        results = st.session_state.watchlist_results
+        for sym in st.session_state.watchlist_symbols:
+            res = results.get(sym, {})
+            if "error" in res:
+                with st.expander(f"{sym} — Error", expanded=False):
+                    st.error(res["error"])
+            elif "analysis" in res:
+                price = res.get("price", 0)
+                with st.expander(f"{sym} — ${price:.2f}", expanded=False):
+                    st.markdown(res["analysis"])
