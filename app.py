@@ -820,12 +820,12 @@ def fetch_ollama_models() -> list[dict]:
 
 def _escape_markdown(text: str) -> str:
     """Escape characters that Streamlit's markdown renderer misinterprets."""
-    return text.replace("$", "\\$").replace("_", "\\_")
+    return text.replace("$", "\\$").replace("_", "\\_").replace("~", "\\~")
 
 
 def _unescape_markdown(text: str) -> str:
     """Reverse _escape_markdown so raw text can be re-used in prompts."""
-    return text.replace("\\$", "$").replace("\\_", "_")
+    return text.replace("\\$", "$").replace("\\_", "_").replace("\\~", "~")
 
 
 def stream_ollama_response(
