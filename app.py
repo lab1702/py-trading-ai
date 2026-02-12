@@ -1262,7 +1262,7 @@ if is_single_mode:
         button_label,
         type="primary",
         disabled=button_disabled,
-        use_container_width=True,
+        width="stretch",
     ):
         st.session_state.analyzing = True
         st.session_state.done = False
@@ -1322,7 +1322,7 @@ else:
         button_label,
         type="primary",
         disabled=wl_button_disabled,
-        use_container_width=True,
+        width="stretch",
     ):
         st.session_state.watchlist_analyzing = True
         st.session_state.watchlist_done = False
@@ -1351,7 +1351,7 @@ if is_single_mode and symbol:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
         fig = build_candlestick_chart(df, symbol, ind, title=chart_title)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Determine strategic period
         strategic_period = STRATEGIC_PERIOD_MAP.get(period)
