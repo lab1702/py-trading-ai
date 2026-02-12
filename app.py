@@ -1,9 +1,12 @@
 import base64
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -75,6 +78,7 @@ def fetch_company_name(symbol: str) -> str:
         info = yf.Ticker(symbol).info
         return info.get("longName") or info.get("shortName") or symbol.upper()
     except Exception:
+        logger.warning("Failed to fetch company name for %s", symbol, exc_info=True)
         return symbol.upper()
 
 
@@ -94,6 +98,7 @@ def fetch_fundamentals(symbol: str) -> dict | None:
             "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
         }
     except Exception:
+        logger.warning("Failed to fetch fundamentals for %s", symbol, exc_info=True)
         return None
 
 
@@ -112,6 +117,7 @@ def fetch_next_earnings(symbol: str) -> str | None:
         days = (nearest - now).days
         return f"in {days} days ({nearest.strftime('%Y-%m-%d')})"
     except Exception:
+        logger.warning("Failed to fetch earnings dates for %s", symbol, exc_info=True)
         return None
 
 
@@ -139,6 +145,7 @@ def fetch_news_headlines(symbol: str, limit: int = 5) -> list[dict]:
                 results.append({"title": title, "publisher": publisher, "date": date_str})
         return results
     except Exception:
+        logger.warning("Failed to fetch news for %s", symbol, exc_info=True)
         return []
 
 
@@ -159,6 +166,7 @@ def fetch_market_context(period: str) -> dict | None:
             "period_low": float(df["Low"].min()),
         }
     except Exception:
+        logger.warning("Failed to fetch market context", exc_info=True)
         return None
 
 
@@ -813,6 +821,7 @@ def fetch_ollama_models() -> list[dict]:
         resp.raise_for_status()
         models = resp.json().get("models", [])
     except Exception:
+        logger.warning("Failed to fetch Ollama model list", exc_info=True)
         return []
 
     def _fetch_model_info(m: dict) -> dict | None:
@@ -836,6 +845,7 @@ def fetch_ollama_models() -> list[dict]:
                 "capabilities": capabilities,
             }
         except Exception:
+            logger.warning("Failed to fetch info for model %s", m["name"], exc_info=True)
             return None
 
     result = []
@@ -897,6 +907,35 @@ def stream_ollama_response(
                     yield _escape_markdown(token)
                 if data.get("done", False):
                     return
+
+
+def _run_ollama_pass(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    images_b64: list[str] | None = None,
+    label: str = "",
+) -> tuple[str | None, str | None]:
+    """Run a streaming Ollama pass, returning (result, error).
+
+    Handles ConnectionError, HTTPError, and unexpected exceptions with
+    user-friendly messages. Returns the streamed text on success, or an
+    error string on failure.
+    """
+    try:
+        result = st.write_stream(
+            stream_ollama_response(model, system_prompt, user_prompt, images_b64)
+        )
+        return result, None
+    except requests.ConnectionError:
+        return None, (
+            f"{label}: Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
+            "Make sure Ollama is running."
+        )
+    except requests.HTTPError as e:
+        return None, f"{label}: Ollama returned an error: {e}"
+    except Exception as e:
+        return None, f"{label}: Unexpected error: {e}"
 
 
 def _format_model_label(m: dict) -> str:
@@ -1395,7 +1434,7 @@ if is_single_mode and symbol:
                             strategic_fig, ind, strategic_df
                         )
                 except Exception:
-                    pass
+                    logger.warning("Failed to capture strategic chart", exc_info=True)
 
             if "chart_b64" not in st.session_state:
                 st.session_state.analyzing = False
@@ -1427,58 +1466,32 @@ if is_single_mode and symbol:
                 current_model = models[step - 1]
                 st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
 
-                observations_raw = None
                 # --- Pass 1: Observation ---
-                try:
-                    obs_system, obs_user = build_observation_messages(**prompt_args)
-                    with st.status("Pass 1/2: Observing...", expanded=False) as status:
-                        observations_text = st.write_stream(
-                            stream_ollama_response(
-                                current_model, obs_system, obs_user, images_b64
-                            )
-                        )
+                obs_system, obs_user = build_observation_messages(**prompt_args)
+                with st.status("Pass 1/2: Observing...", expanded=False) as status:
+                    obs_text, obs_error = _run_ollama_pass(
+                        current_model, obs_system, obs_user, images_b64,
+                        label="Observation pass",
+                    )
+                    if obs_text is not None:
                         status.update(label="Pass 1/2: Observations complete", state="complete")
-                    observations_raw = _unescape_markdown(observations_text)
-                except requests.ConnectionError:
-                    st.session_state.ai_errors[current_model] = (
-                        f"Observation pass: Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
-                        "Make sure Ollama is running."
-                    )
-                except requests.HTTPError as e:
-                    st.session_state.ai_errors[current_model] = (
-                        f"Observation pass: Ollama returned an error: {e}"
-                    )
-                except Exception as e:
-                    st.session_state.ai_errors[current_model] = (
-                        f"Observation pass: Unexpected error: {e}"
-                    )
 
-                # --- Pass 2: Synthesis (only if pass 1 succeeded) ---
-                if observations_raw is not None:
-                    try:
-                        syn_system, syn_user = build_analysis_messages(
-                            **prompt_args, observations=observations_raw,
-                        )
-                        syn_images = images_b64 if send_images_both_passes else None
-                        result = st.write_stream(
-                            stream_ollama_response(
-                                current_model, syn_system, syn_user, syn_images
-                            )
-                        )
+                if obs_error:
+                    st.session_state.ai_errors[current_model] = obs_error
+                elif obs_text is not None:
+                    # --- Pass 2: Synthesis ---
+                    syn_system, syn_user = build_analysis_messages(
+                        **prompt_args, observations=_unescape_markdown(obs_text),
+                    )
+                    syn_images = images_b64 if send_images_both_passes else None
+                    result, syn_error = _run_ollama_pass(
+                        current_model, syn_system, syn_user, syn_images,
+                        label="Synthesis pass",
+                    )
+                    if syn_error:
+                        st.session_state.ai_errors[current_model] = syn_error
+                    elif result is not None:
                         st.session_state.ai_outputs[current_model] = result
-                    except requests.ConnectionError:
-                        st.session_state.ai_errors[current_model] = (
-                            f"Synthesis pass: Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
-                            "Make sure Ollama is running."
-                        )
-                    except requests.HTTPError as e:
-                        st.session_state.ai_errors[current_model] = (
-                            f"Synthesis pass: Ollama returned an error: {e}"
-                        )
-                    except Exception as e:
-                        st.session_state.ai_errors[current_model] = (
-                            f"Synthesis pass: Unexpected error: {e}"
-                        )
 
                 st.session_state.analysis_step = step + 1
 
@@ -1508,28 +1521,17 @@ if is_single_mode and symbol:
                 consensus_sys, consensus_user = build_consensus_messages(
                     symbol, successful, model_sizes, df, ind
                 )
-                try:
-                    result = st.write_stream(
-                        stream_ollama_response(consensus_model, consensus_sys, consensus_user)
-                    )
+                result, con_error = _run_ollama_pass(
+                    consensus_model, consensus_sys, consensus_user,
+                    label="Consensus",
+                )
+                if con_error:
+                    st.session_state.consensus_error = con_error
+                elif result is not None:
                     st.session_state.consensus_output = result
-                except requests.ConnectionError:
-                    st.session_state.consensus_error = (
-                        f"Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
-                        "Make sure Ollama is running."
-                    )
-                except requests.HTTPError as e:
-                    st.session_state.consensus_error = (
-                        f"Ollama returned an error: {e}"
-                    )
-                except Exception as e:
-                    st.session_state.consensus_error = (
-                        f"Unexpected error during consensus: {e}"
-                    )
-                finally:
-                    st.session_state.analyzing = False
-                    st.session_state.done = True
-                    st.rerun()
+                st.session_state.analyzing = False
+                st.session_state.done = True
+                st.rerun()
 
         elif st.session_state.done:
             ai_outputs = st.session_state.get("ai_outputs", {})
@@ -1598,7 +1600,7 @@ if is_single_mode and symbol:
                         consensus_output,
                     )
                 except Exception:
-                    pass
+                    logger.warning("Failed to save analysis history", exc_info=True)
                 st.session_state.history_saved = True
 
             # Show analysis history
