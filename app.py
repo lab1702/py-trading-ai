@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -201,10 +202,10 @@ def _compute_indicators(df: pd.DataFrame) -> None:
     df["ATR"] = tr.ewm(span=14, adjust=False).mean()
 
     # ADX (14-period)
-    plus_dm = df["High"].diff()
-    minus_dm = -df["Low"].diff()
-    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
-    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+    raw_plus_dm = df["High"].diff()
+    raw_minus_dm = -df["Low"].diff()
+    plus_dm = raw_plus_dm.where((raw_plus_dm > raw_minus_dm) & (raw_plus_dm > 0), 0.0)
+    minus_dm = raw_minus_dm.where((raw_minus_dm > raw_plus_dm) & (raw_minus_dm > 0), 0.0)
     atr14 = df["ATR"]
     with np.errstate(divide="ignore", invalid="ignore"):
         df["Plus_DI"] = 100 * plus_dm.ewm(span=14, adjust=False).mean() / atr14
@@ -374,19 +375,25 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
     price_title = title or f"{symbol.upper()} Price"
     subplot_titles = [price_title, "Volume"]
 
-    if ind.rsi:
+    # Only add sub-chart rows for indicators with valid data
+    show_rsi = ind.rsi and df["RSI"].notna().any()
+    show_macd = ind.macd and df["MACD"].notna().any()
+    show_atr = ind.atr and df["ATR"].notna().any()
+    show_adx = ind.adx and df["ADX"].notna().any()
+
+    if show_rsi:
         rows += 1
         row_heights.append(0.2)
         subplot_titles.append("RSI (14)")
-    if ind.macd:
+    if show_macd:
         rows += 1
         row_heights.append(0.2)
         subplot_titles.append("MACD")
-    if ind.atr:
+    if show_atr:
         rows += 1
         row_heights.append(0.2)
         subplot_titles.append("ATR (14)")
-    if ind.adx:
+    if show_adx:
         rows += 1
         row_heights.append(0.2)
         subplot_titles.append("ADX (14)")
@@ -422,23 +429,23 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
     # Row 2: Volume
     _add_volume(fig, df)
 
-    # Remaining rows: RSI / MACD / ATR / ADX
+    # Remaining rows: RSI / MACD / ATR / ADX (only if data exists)
     current_row = 3
-    if ind.rsi:
+    if show_rsi:
         _add_rsi(fig, df, current_row)
         current_row += 1
-    if ind.macd:
+    if show_macd:
         _add_macd(fig, df, current_row)
         current_row += 1
-    if ind.atr:
+    if show_atr:
         _add_atr(fig, df, current_row)
         current_row += 1
-    if ind.adx:
+    if show_adx:
         _add_adx(fig, df, current_row)
 
     base_height = 500
     sub_chart_height = 200
-    extra = sum([ind.rsi, ind.macd, ind.atr, ind.adx])
+    extra = sum([show_rsi, show_macd, show_atr, show_adx])
     chart_height = base_height + extra * sub_chart_height
 
     # Dark theme
@@ -459,8 +466,13 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
     return fig
 
 
-def chart_to_base64_png(fig: go.Figure, ind: Indicators) -> str:
-    extra = sum([ind.rsi, ind.macd, ind.atr, ind.adx])
+def chart_to_base64_png(fig: go.Figure, ind: Indicators, df: pd.DataFrame) -> str:
+    extra = sum([
+        ind.rsi and df["RSI"].notna().any(),
+        ind.macd and df["MACD"].notna().any(),
+        ind.atr and df["ATR"].notna().any(),
+        ind.adx and df["ADX"].notna().any(),
+    ])
     img_height = 600 + extra * 200
     img_bytes = fig.to_image(format="png", width=1200, height=img_height, scale=2)
     return base64.b64encode(img_bytes).decode("utf-8")
@@ -570,8 +582,12 @@ def _build_prompt_data_lines(
     if ind.atr:
         atr_val = latest.get("ATR")
         if pd.notna(atr_val):
-            atr_pct = (atr_val / latest["Close"]) * 100
-            lines.append(f"- ATR (14): ${atr_val:.2f} ({atr_pct:.1f}% of price)")
+            close_price = latest["Close"]
+            if close_price > 0:
+                atr_pct = (atr_val / close_price) * 100
+                lines.append(f"- ATR (14): ${atr_val:.2f} ({atr_pct:.1f}% of price)")
+            else:
+                lines.append(f"- ATR (14): ${atr_val:.2f}")
         else:
             lines.append("- ATR (14): N/A (insufficient data)")
     if ind.adx:
@@ -756,27 +772,33 @@ def build_analysis_messages(
         "$172 would negate the bullish setup."
     )
 
-    lines = _build_prompt_data_lines(
-        symbol, period, df, ind,
-        fundamentals=fundamentals,
-        earnings_info=earnings_info,
-        market_context=market_context,
-        support_levels=support_levels,
-        resistance_levels=resistance_levels,
-        strategic_period=strategic_period,
-        news_headlines=news_headlines,
-    )
-
     if observations:
-        lines.append(
+        # Slim prompt: just context + observations, no redundant data lines
+        latest = df.iloc[-1]
+        active = ind.active_labels()
+        indicator_text = ", ".join(active) if active else "None"
+        lines = [
+            f"Synthesize a technical analysis for {symbol.upper()}.",
+            f"Timeframe: {period}, Latest close: ${latest['Close']:.2f}",
+            f"Indicators: {indicator_text}",
             "\n--- Your prior observations (from pass 1) ---\n"
             f"{observations}\n"
             "--- End of observations ---\n"
-            "\nUsing your observations above and the chart image(s), synthesize your "
-            "analysis into the standard format. Focus on interpreting and drawing "
+            "\nUsing your observations above (and the chart image if provided), synthesize "
+            "your analysis into the standard format. Focus on interpreting and drawing "
             "conclusions from your observations rather than re-describing what you see."
-        )
+        ]
     else:
+        lines = _build_prompt_data_lines(
+            symbol, period, df, ind,
+            fundamentals=fundamentals,
+            earnings_info=earnings_info,
+            market_context=market_context,
+            support_levels=support_levels,
+            resistance_levels=resistance_levels,
+            strategic_period=strategic_period,
+            news_headlines=news_headlines,
+        )
         lines.append("\nAnalyze both the chart image(s) and the numeric data above.")
 
     return system_prompt, "\n".join(lines)
@@ -792,8 +814,7 @@ def fetch_ollama_models() -> list[dict]:
     except Exception:
         return []
 
-    result = []
-    for m in models:
+    def _fetch_model_info(m: dict) -> dict | None:
         try:
             show = requests.post(
                 f"{OLLAMA_BASE_URL}/api/show",
@@ -807,25 +828,40 @@ def fetch_ollama_models() -> list[dict]:
                 disk_size = f"{disk_bytes / (1 << 30):.1f} GB"
             else:
                 disk_size = f"{disk_bytes / (1 << 20):.0f} MB"
-            result.append({
+            return {
                 "name": m["name"],
                 "parameter_size": param_size,
                 "disk_size": disk_size,
                 "capabilities": capabilities,
-            })
+            }
         except Exception:
-            continue
+            return None
+
+    result = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_fetch_model_info, m): m["name"] for m in models}
+        for future in as_completed(futures):
+            info = future.result()
+            if info is not None:
+                result.append(info)
+    # Preserve original ordering from /api/tags
+    name_order = {m["name"]: i for i, m in enumerate(models)}
+    result.sort(key=lambda r: name_order.get(r["name"], 0))
     return result
 
 
 def _escape_markdown(text: str) -> str:
-    """Escape characters that Streamlit's markdown renderer misinterprets."""
-    return text.replace("$", "\\$").replace("_", "\\_").replace("~", "\\~")
+    """Escape characters that Streamlit's markdown renderer misinterprets.
+
+    Only escapes $ (LaTeX trigger) and ~~ (strikethrough). Leaves _ alone
+    since models produce intentional markdown formatting with underscores.
+    """
+    return text.replace("$", "\\$").replace("~~", "\\~\\~")
 
 
 def _unescape_markdown(text: str) -> str:
     """Reverse _escape_markdown so raw text can be re-used in prompts."""
-    return text.replace("\\$", "$").replace("\\_", "_").replace("\\~", "~")
+    return text.replace("\\~\\~", "~~").replace("\\$", "$")
 
 
 def stream_ollama_response(
@@ -988,6 +1024,8 @@ def save_analysis(
         except (json.JSONDecodeError, OSError):
             history = []
     history.append(entry)
+    # Keep only the most recent 100 entries to prevent unbounded growth
+    history = history[-100:]
     with open(ANALYSIS_HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
@@ -1016,6 +1054,13 @@ for key, default in {
     "done": False,
     "history_saved": False,
     "strategic_chart_b64": None,
+    "ai_outputs": {},
+    "ai_errors": {},
+    "consensus_output": "",
+    "consensus_error": "",
+    "analysis_step": 0,
+    "analysis_models": [],
+    "consensus_model_name": None,
     "watchlist_analyzing": False,
     "watchlist_done": False,
     "watchlist_symbols": [],
@@ -1120,6 +1165,15 @@ ind = Indicators(
     adx=show_adx,
 )
 
+st.sidebar.header("Analysis Settings")
+send_images_both_passes = st.sidebar.checkbox(
+    "Send chart to both passes",
+    value=True,
+    disabled=locked,
+    help="When enabled, chart images are sent to both the observation and synthesis passes. "
+         "Disabling halves vision inference cost but may reduce quality.",
+)
+
 # Sidebar: model selection + action button
 st.sidebar.divider()
 available_models = fetch_ollama_models()
@@ -1199,15 +1253,19 @@ if is_single_mode:
             selected_consensus_model = consensus_selection
 
     needs_consensus = len(selected_vision_names) >= 2 and selected_consensus_model is None
-    button_disabled = locked or not symbol or not selected_vision_names or needs_consensus or st.session_state.done
+    button_disabled = locked or not symbol or not selected_vision_names or needs_consensus
+
+    if st.session_state.done:
+        button_label = "Re-analyze"
 
     if st.sidebar.button(
         button_label,
         type="primary",
         disabled=button_disabled,
-        width="stretch",
+        use_container_width=True,
     ):
         st.session_state.analyzing = True
+        st.session_state.done = False
         st.session_state.analysis_step = 1
         st.session_state.analysis_models = list(selected_vision_names)
         st.session_state.consensus_model_name = selected_consensus_model
@@ -1216,6 +1274,8 @@ if is_single_mode:
         st.session_state.consensus_output = ""
         st.session_state.consensus_error = ""
         st.session_state.history_saved = False
+        st.session_state.pop("chart_b64", None)
+        st.session_state.strategic_chart_b64 = None
         st.rerun()
 
 else:
@@ -1253,16 +1313,19 @@ else:
         locked
         or not parsed_symbols
         or not selected_watchlist_model
-        or st.session_state.watchlist_done
     )
+
+    if st.session_state.watchlist_done:
+        button_label = "Re-scan"
 
     if st.sidebar.button(
         button_label,
         type="primary",
         disabled=wl_button_disabled,
-        width="stretch",
+        use_container_width=True,
     ):
         st.session_state.watchlist_analyzing = True
+        st.session_state.watchlist_done = False
         st.session_state.watchlist_step = 1
         st.session_state.watchlist_symbols = parsed_symbols
         st.session_state.watchlist_results = {}
@@ -1288,7 +1351,7 @@ if is_single_mode and symbol:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
         fig = build_candlestick_chart(df, symbol, ind, title=chart_title)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
         # Determine strategic period
         strategic_period = STRATEGIC_PERIOD_MAP.get(period)
@@ -1303,7 +1366,7 @@ if is_single_mode and symbol:
             if "chart_b64" not in st.session_state:
                 with st.spinner("Capturing chart..."):
                     try:
-                        st.session_state.chart_b64 = chart_to_base64_png(fig, ind)
+                        st.session_state.chart_b64 = chart_to_base64_png(fig, ind, df)
                     except Exception as e:
                         st.session_state.analyzing = False
                         st.session_state.done = True
@@ -1324,7 +1387,7 @@ if is_single_mode and symbol:
                             strategic_df, symbol, ind, title=strategic_title
                         )
                         st.session_state.strategic_chart_b64 = chart_to_base64_png(
-                            strategic_fig, ind
+                            strategic_fig, ind, strategic_df
                         )
                     else:
                         st.session_state.strategic_chart_b64 = False
@@ -1393,9 +1456,10 @@ if is_single_mode and symbol:
                         syn_system, syn_user = build_analysis_messages(
                             **prompt_args, observations=observations_raw,
                         )
+                        syn_images = images_b64 if send_images_both_passes else None
                         result = st.write_stream(
                             stream_ollama_response(
-                                current_model, syn_system, syn_user, images_b64
+                                current_model, syn_system, syn_user, syn_images
                             )
                         )
                         st.session_state.ai_outputs[current_model] = result
@@ -1560,7 +1624,6 @@ elif not is_single_mode:
 
         if wl_step >= 1 and wl_step <= wl_total:
             current_sym = wl_symbols[wl_step - 1]
-            st.info(f"Scanning {current_sym} ({wl_step}/{wl_total})...")
 
             try:
                 wl_df = fetch_stock_data(current_sym, period)
@@ -1573,14 +1636,15 @@ elif not is_single_mode:
                 else:
                     wl_title = f"{wl_company} ({current_sym})"
                     wl_fig = build_candlestick_chart(wl_df, current_sym, ind, title=wl_title)
-                    wl_img = chart_to_base64_png(wl_fig, ind)
+                    wl_img = chart_to_base64_png(wl_fig, ind, wl_df)
                     sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df, ind)
-                    chunks = []
-                    for chunk in stream_ollama_response(
-                        wl_model, sys_prompt, usr_prompt, [wl_img]
-                    ):
-                        chunks.append(chunk)
-                    analysis_text = "".join(chunks)
+                    with st.status(f"Scanning {current_sym} ({wl_step}/{wl_total})...", expanded=False) as wl_status:
+                        analysis_text = st.write_stream(
+                            stream_ollama_response(
+                                wl_model, sys_prompt, usr_prompt, [wl_img]
+                            )
+                        )
+                        wl_status.update(label=f"{current_sym} complete", state="complete")
 
                     latest_price = wl_df["Close"].iloc[-1]
                     st.session_state.watchlist_results[current_sym] = {

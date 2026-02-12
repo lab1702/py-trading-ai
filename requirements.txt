@@ -1,5 +1,5 @@
 streamlit
 plotly
-yfinance
+yfinance>=0.2.31
 requests
 kaleido
