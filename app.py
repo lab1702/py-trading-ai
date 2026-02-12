@@ -32,6 +32,8 @@ class Indicators:
     bb: bool = True
     rsi: bool = True
     macd: bool = True
+    atr: bool = True
+    adx: bool = True
 
     def active_labels(self) -> list[str]:
         labels = []
@@ -45,6 +47,10 @@ class Indicators:
             labels.append("RSI (14)")
         if self.macd:
             labels.append("MACD (12, 26, 9)")
+        if self.atr:
+            labels.append("ATR (14)")
+        if self.adx:
+            labels.append("ADX (14)")
         return labels
 
 
@@ -106,6 +112,28 @@ def fetch_next_earnings(symbol: str) -> str | None:
 
 
 @st.cache_data(show_spinner=False, ttl=300)
+def fetch_news_headlines(symbol: str, limit: int = 5) -> list[dict]:
+    """Fetch recent news headlines for a ticker symbol."""
+    try:
+        news = yf.Ticker(symbol).news
+        if not news:
+            return []
+        results = []
+        for item in news[:limit]:
+            title = item.get("title", "")
+            publisher = item.get("publisher", "")
+            pub_time = item.get("providerPublishTime")
+            date_str = ""
+            if pub_time:
+                date_str = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d")
+            if title:
+                results.append({"title": title, "publisher": publisher, "date": date_str})
+        return results
+    except Exception:
+        return []
+
+
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_market_context(period: str) -> dict | None:
     """Fetch S&P 500 market context for the given period."""
     try:
@@ -157,6 +185,27 @@ def _compute_indicators(df: pd.DataFrame) -> None:
     df["MACD"] = df["EMA_12"] - df["EMA_26"]
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
+
+    # ATR (14-period)
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        df["High"] - df["Low"],
+        (df["High"] - prev_close).abs(),
+        (df["Low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df["ATR"] = tr.ewm(span=14, adjust=False).mean()
+
+    # ADX (14-period)
+    plus_dm = df["High"].diff()
+    minus_dm = -df["Low"].diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+    atr14 = df["ATR"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["Plus_DI"] = 100 * plus_dm.ewm(span=14, adjust=False).mean() / atr14
+        df["Minus_DI"] = 100 * minus_dm.ewm(span=14, adjust=False).mean() / atr14
+        dx = (abs(df["Plus_DI"] - df["Minus_DI"]) / (df["Plus_DI"] + df["Minus_DI"])) * 100
+    df["ADX"] = dx.ewm(span=14, adjust=False).mean()
 
 
 def compute_support_resistance(
@@ -279,6 +328,36 @@ def _add_macd(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
     )
 
 
+def _add_atr(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
+    """Add ATR sub-chart at the given row."""
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df["ATR"], name="ATR",
+                   line=dict(width=1, color="#ffa726")),
+        row=row, col=1,
+    )
+
+
+def _add_adx(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
+    """Add ADX sub-chart at the given row."""
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df["ADX"], name="ADX",
+                   line=dict(width=2, color="#ab47bc")),
+        row=row, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df["Plus_DI"], name="+DI",
+                   line=dict(width=1, color="#26a69a", dash="dot")),
+        row=row, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df["Minus_DI"], name="-DI",
+                   line=dict(width=1, color="#ef5350", dash="dot")),
+        row=row, col=1,
+    )
+    fig.add_hline(y=25, line_dash="dash", line_color="#78909c",
+                  line_width=1, row=row, col=1)
+
+
 def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
                             title: str | None = None) -> go.Figure:
     # Determine subplot layout
@@ -295,6 +374,14 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
         rows += 1
         row_heights.append(0.2)
         subplot_titles.append("MACD")
+    if ind.atr:
+        rows += 1
+        row_heights.append(0.2)
+        subplot_titles.append("ATR (14)")
+    if ind.adx:
+        rows += 1
+        row_heights.append(0.2)
+        subplot_titles.append("ADX (14)")
 
     # Normalize row heights so they sum to 1
     total = sum(row_heights)
@@ -327,17 +414,23 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
     # Row 2: Volume
     _add_volume(fig, df)
 
-    # Remaining rows: RSI / MACD
+    # Remaining rows: RSI / MACD / ATR / ADX
     current_row = 3
     if ind.rsi:
         _add_rsi(fig, df, current_row)
         current_row += 1
     if ind.macd:
         _add_macd(fig, df, current_row)
+        current_row += 1
+    if ind.atr:
+        _add_atr(fig, df, current_row)
+        current_row += 1
+    if ind.adx:
+        _add_adx(fig, df, current_row)
 
     base_height = 500
     sub_chart_height = 200
-    extra = (1 if ind.rsi else 0) + (1 if ind.macd else 0)
+    extra = sum([ind.rsi, ind.macd, ind.atr, ind.adx])
     chart_height = base_height + extra * sub_chart_height
 
     # Dark theme
@@ -359,10 +452,62 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
 
 
 def chart_to_base64_png(fig: go.Figure, ind: Indicators) -> str:
-    extra = (1 if ind.rsi else 0) + (1 if ind.macd else 0)
+    extra = sum([ind.rsi, ind.macd, ind.atr, ind.adx])
     img_height = 600 + extra * 200
     img_bytes = fig.to_image(format="png", width=1200, height=img_height, scale=2)
     return base64.b64encode(img_bytes).decode("utf-8")
+
+
+def build_observation_messages(
+    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
+    fundamentals: dict | None = None,
+    earnings_info: str | None = None,
+    market_context: dict | None = None,
+    support_levels: list[float] | None = None,
+    resistance_levels: list[float] | None = None,
+    strategic_period: str | None = None,
+    news_headlines: list[dict] | None = None,
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for the observation pass (pass 1).
+
+    Instructs the model to list factual observations only — no predictions
+    or recommendations.
+    """
+    system_prompt = (
+        "You are a stock market technical analyst. Your task is to OBSERVE and LIST "
+        "every technical signal visible on the chart and in the data. Do NOT make "
+        "predictions, recommendations, or draw conclusions.\n\n"
+        "List your observations in these categories:\n"
+        "- **Price Action**: Trend direction, higher highs/lows, consolidation, gaps\n"
+        "- **Indicator Readings**: What each active indicator currently shows\n"
+        "- **Candlestick Patterns**: Any notable patterns visible on the chart\n"
+        "- **Volume Behavior**: Volume trends, spikes, divergences\n"
+        "- **Support & Resistance**: Key levels visible on the chart\n"
+        "- **News Context**: Implications of any recent headlines (if provided)\n\n"
+        "Be thorough and factual. Stick to what you can see and measure."
+    )
+
+    # Reuse the same data assembly as build_analysis_messages but with a
+    # different instruction at the end.
+    _, user_prompt = build_analysis_messages(
+        symbol, period, df, ind,
+        fundamentals=fundamentals,
+        earnings_info=earnings_info,
+        market_context=market_context,
+        support_levels=support_levels,
+        resistance_levels=resistance_levels,
+        strategic_period=strategic_period,
+        news_headlines=news_headlines,
+    )
+
+    # Replace the final instruction line
+    user_prompt = user_prompt.replace(
+        "\nAnalyze both the chart image(s) and the numeric data above.",
+        "\nList all technical observations from the chart image(s) and numeric data above. "
+        "Observations only — no predictions or recommendations.",
+    )
+
+    return system_prompt, user_prompt
 
 
 def build_analysis_messages(
@@ -373,6 +518,8 @@ def build_analysis_messages(
     support_levels: list[float] | None = None,
     resistance_levels: list[float] | None = None,
     strategic_period: str | None = None,
+    news_headlines: list[dict] | None = None,
+    observations: str | None = None,
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the vision analysis."""
     system_prompt = (
@@ -492,6 +639,31 @@ def build_analysis_messages(
             lines.append(f"  MACD is {cross} signal line ({'bullish' if cross == 'above' else 'bearish'})")
         else:
             lines.append("- MACD: N/A (insufficient data)")
+    if ind.atr:
+        atr_val = latest.get("ATR")
+        if pd.notna(atr_val):
+            atr_pct = (atr_val / latest["Close"]) * 100
+            lines.append(f"- ATR (14): ${atr_val:.2f} ({atr_pct:.1f}% of price)")
+        else:
+            lines.append("- ATR (14): N/A (insufficient data)")
+    if ind.adx:
+        adx_val = latest.get("ADX")
+        plus_di = latest.get("Plus_DI")
+        minus_di = latest.get("Minus_DI")
+        if pd.notna(adx_val):
+            if adx_val < 20:
+                adx_label = "weak/no trend"
+            elif adx_val < 25:
+                adx_label = "emerging trend"
+            elif adx_val < 50:
+                adx_label = "strong trend"
+            else:
+                adx_label = "very strong trend"
+            dominant = "+DI (bullish)" if plus_di > minus_di else "-DI (bearish)"
+            lines.append(f"- ADX (14): {adx_val:.1f} ({adx_label})")
+            lines.append(f"  +DI: {plus_di:.1f}, -DI: {minus_di:.1f} — {dominant} dominant")
+        else:
+            lines.append("- ADX (14): N/A (insufficient data)")
 
     # --- Fundamental context ---
     has_fundamentals = fundamentals and any(v is not None for v in fundamentals.values())
@@ -534,6 +706,14 @@ def build_analysis_messages(
             f"- {market_context['period_high']:,.2f}"
         )
 
+    # --- News headlines ---
+    if news_headlines:
+        lines.append("\nRecent news:")
+        for item in news_headlines:
+            date_part = f" ({item['date']})" if item.get("date") else ""
+            pub_part = f" — {item['publisher']}" if item.get("publisher") else ""
+            lines.append(f"- {item['title']}{pub_part}{date_part}")
+
     # --- Support/Resistance ---
     if support_levels:
         lines.append(
@@ -558,7 +738,18 @@ def build_analysis_messages(
         )
 
     lines.append(f"\nVisible indicators on chart: {indicator_text}")
-    lines.append("\nAnalyze both the chart image(s) and the numeric data above.")
+
+    if observations:
+        lines.append(
+            "\n--- Your prior observations (from pass 1) ---\n"
+            f"{observations}\n"
+            "--- End of observations ---\n"
+            "\nUsing your observations above and the chart image(s), synthesize your "
+            "analysis into the standard format. Focus on interpreting and drawing "
+            "conclusions from your observations rather than re-describing what you see."
+        )
+    else:
+        lines.append("\nAnalyze both the chart image(s) and the numeric data above.")
 
     return system_prompt, "\n".join(lines)
 
@@ -797,6 +988,7 @@ for key, default in {
     "done": False,
     "history_saved": False,
     "strategic_chart_b64": None,
+    "analysis_phase": "observing",
     "watchlist_analyzing": False,
     "watchlist_done": False,
     "watchlist_symbols": [],
@@ -815,6 +1007,7 @@ def _on_input_change():
     st.session_state.consensus_output = ""
     st.session_state.consensus_error = ""
     st.session_state.analysis_step = 0
+    st.session_state.analysis_phase = "observing"
     st.session_state.analysis_models = []
     st.session_state.consensus_model_name = None
     st.session_state.pop("chart_b64", None)
@@ -886,6 +1079,10 @@ show_rsi = st.sidebar.checkbox("RSI (14)", value=True, on_change=_on_shared_inpu
                                disabled=locked)
 show_macd = st.sidebar.checkbox("MACD", value=True, on_change=_on_shared_input_change,
                                 disabled=locked)
+show_atr = st.sidebar.checkbox("ATR (14)", value=True, on_change=_on_shared_input_change,
+                               disabled=locked)
+show_adx = st.sidebar.checkbox("ADX (14)", value=True, on_change=_on_shared_input_change,
+                               disabled=locked)
 
 ind = Indicators(
     sma=show_sma,
@@ -893,6 +1090,8 @@ ind = Indicators(
     bb=show_bb,
     rsi=show_rsi,
     macd=show_macd,
+    atr=show_atr,
+    adx=show_adx,
 )
 
 # Sidebar: model selection + action button
@@ -910,10 +1109,11 @@ if is_single_mode:
         models = st.session_state.get("analysis_models", [])
         total = len(models)
         consensus_model = st.session_state.get("consensus_model_name")
+        analysis_phase = st.session_state.get("analysis_phase", "observing")
         if step <= total and total > 1:
-            button_label = f"Analyzing ({step}/{total} models)..."
+            button_label = f"Analyzing ({step}/{total} models, {analysis_phase})..."
         elif step <= total:
-            button_label = "Analyzing..."
+            button_label = f"Analyzing ({analysis_phase})..."
         elif consensus_model:
             button_label = "Generating consensus..."
         else:
@@ -1055,6 +1255,7 @@ if is_single_mode and symbol:
         fundamentals = fetch_fundamentals(symbol)
         earnings_info = fetch_next_earnings(symbol)
         market_ctx = fetch_market_context(period)
+        news_headlines = fetch_news_headlines(symbol)
 
     if df is None or df.empty:
         st.error(f"No data found for **{symbol}**. Check the symbol and try again.")
@@ -1118,24 +1319,45 @@ if is_single_mode and symbol:
             else:
                 actual_strategic = None
 
-            if step >= 1 and step <= total:
-                # Vision model analysis step
-                current_model = models[step - 1]
-                system_prompt, user_prompt = build_analysis_messages(
-                    symbol, period, df, ind,
-                    fundamentals=fundamentals,
-                    earnings_info=earnings_info,
-                    market_context=market_ctx,
-                    support_levels=support_levels,
-                    resistance_levels=resistance_levels,
-                    strategic_period=actual_strategic,
-                )
+            # Common prompt args for both passes
+            prompt_args = dict(
+                symbol=symbol, period=period, df=df, ind=ind,
+                fundamentals=fundamentals,
+                earnings_info=earnings_info,
+                market_context=market_ctx,
+                support_levels=support_levels,
+                resistance_levels=resistance_levels,
+                strategic_period=actual_strategic,
+                news_headlines=news_headlines,
+            )
 
+            if step >= 1 and step <= total:
+                # Vision model analysis step (two-pass)
+                current_model = models[step - 1]
                 st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
+
                 try:
+                    # --- Pass 1: Observation ---
+                    st.session_state.analysis_phase = "observing"
+                    obs_system, obs_user = build_observation_messages(**prompt_args)
+                    with st.expander("Observations (pass 1)", expanded=False):
+                        obs_chunks = []
+                        for chunk in stream_ollama_response(
+                            current_model, obs_system, obs_user, images_b64
+                        ):
+                            obs_chunks.append(chunk)
+                        observations_text = "".join(obs_chunks)
+                        st.markdown(observations_text)
+                    observations_raw = _unescape_markdown(observations_text)
+
+                    # --- Pass 2: Synthesis ---
+                    st.session_state.analysis_phase = "synthesizing"
+                    syn_system, syn_user = build_analysis_messages(
+                        **prompt_args, observations=observations_raw,
+                    )
                     result = st.write_stream(
                         stream_ollama_response(
-                            current_model, system_prompt, user_prompt, images_b64
+                            current_model, syn_system, syn_user, images_b64
                         )
                     )
                     st.session_state.ai_outputs[current_model] = result
@@ -1154,6 +1376,7 @@ if is_single_mode and symbol:
                     )
 
                 st.session_state.analysis_step = step + 1
+                st.session_state.analysis_phase = "observing"
 
                 # Check if we're done with vision models
                 if step == total:
