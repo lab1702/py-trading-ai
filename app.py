@@ -161,7 +161,7 @@ def fetch_market_context(period: str) -> dict | None:
             return None
         first_close = df["Close"].iloc[0]
         latest_close = df["Close"].iloc[-1]
-        period_return = ((latest_close - first_close) / first_close) * 100
+        period_return = ((latest_close - first_close) / first_close) * 100 if first_close != 0 else 0.0
         return {
             "latest_close": float(latest_close),
             "period_return": float(period_return),
@@ -838,11 +838,13 @@ def fetch_ollama_models() -> list[dict]:
 
     def _fetch_model_info(m: dict) -> dict | None:
         try:
-            show = requests.post(
+            resp = requests.post(
                 f"{OLLAMA_BASE_URL}/api/show",
                 json={"model": m["name"]},
                 timeout=5,
-            ).json()
+            )
+            resp.raise_for_status()
+            show = resp.json()
             capabilities = show.get("capabilities", [])
             param_size = show.get("details", {}).get("parameter_size", "")
             disk_bytes = m.get("size", 0)
@@ -1074,6 +1076,7 @@ def save_analysis(
             with open(ANALYSIS_HISTORY_FILE, "r") as f:
                 history = json.load(f)
         except (json.JSONDecodeError, OSError):
+            logger.warning("Failed to load analysis history for save; starting fresh", exc_info=True)
             history = []
     history.append(entry)
     # Keep only the most recent 100 entries to prevent unbounded growth
@@ -1157,7 +1160,6 @@ def _on_watchlist_input_change():
     st.session_state.watchlist_results = {}
     st.session_state.watchlist_step = 0
     st.session_state.watchlist_symbols = []
-    st.session_state.history_saved = False
 
 
 def _on_shared_input_change():
