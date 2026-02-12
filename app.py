@@ -1156,6 +1156,7 @@ def _on_input_change():
 
 def _on_watchlist_input_change():
     """Clear watchlist results when inputs change."""
+    st.session_state.watchlist_text = st.session_state.watchlist_text.upper()
     st.session_state.watchlist_done = False
     st.session_state.watchlist_results = {}
     st.session_state.watchlist_step = 0
