@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 import numpy as np
 import pandas as pd
 import requests
@@ -15,6 +13,8 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -781,7 +781,7 @@ def build_analysis_messages(
         "$172 would negate the bullish setup."
     )
 
-    if observations:
+    if observations is not None:
         # Slim prompt: just context + observations, no redundant data lines
         latest = df.iloc[-1]
         active = ind.active_labels()
@@ -922,6 +922,7 @@ def _run_ollama_pass(
     user-friendly messages. Returns the streamed text on success, or an
     error string on failure.
     """
+    prefix = f"{label}: " if label else ""
     try:
         result = st.write_stream(
             stream_ollama_response(model, system_prompt, user_prompt, images_b64)
@@ -929,13 +930,13 @@ def _run_ollama_pass(
         return result, None
     except requests.ConnectionError:
         return None, (
-            f"{label}: Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
+            f"{prefix}Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
             "Make sure Ollama is running."
         )
     except requests.HTTPError as e:
-        return None, f"{label}: Ollama returned an error: {e}"
+        return None, f"{prefix}Ollama returned an error: {e}"
     except Exception as e:
-        return None, f"{label}: Unexpected error: {e}"
+        return None, f"{prefix}Unexpected error: {e}"
 
 
 def _format_model_label(m: dict) -> str:
@@ -1466,32 +1467,35 @@ if is_single_mode and symbol:
                 current_model = models[step - 1]
                 st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
 
-                # --- Pass 1: Observation ---
-                obs_system, obs_user = build_observation_messages(**prompt_args)
-                with st.status("Pass 1/2: Observing...", expanded=False) as status:
-                    obs_text, obs_error = _run_ollama_pass(
-                        current_model, obs_system, obs_user, images_b64,
-                        label="Observation pass",
-                    )
-                    if obs_text is not None:
-                        status.update(label="Pass 1/2: Observations complete", state="complete")
+                try:
+                    # --- Pass 1: Observation ---
+                    obs_system, obs_user = build_observation_messages(**prompt_args)
+                    with st.status("Pass 1/2: Observing...", expanded=False) as status:
+                        obs_text, obs_error = _run_ollama_pass(
+                            current_model, obs_system, obs_user, images_b64,
+                            label="Observation pass",
+                        )
+                        if obs_text is not None:
+                            status.update(label="Pass 1/2: Observations complete", state="complete")
 
-                if obs_error:
-                    st.session_state.ai_errors[current_model] = obs_error
-                elif obs_text is not None:
-                    # --- Pass 2: Synthesis ---
-                    syn_system, syn_user = build_analysis_messages(
-                        **prompt_args, observations=_unescape_markdown(obs_text),
-                    )
-                    syn_images = images_b64 if send_images_both_passes else None
-                    result, syn_error = _run_ollama_pass(
-                        current_model, syn_system, syn_user, syn_images,
-                        label="Synthesis pass",
-                    )
-                    if syn_error:
-                        st.session_state.ai_errors[current_model] = syn_error
-                    elif result is not None:
-                        st.session_state.ai_outputs[current_model] = result
+                    if obs_error:
+                        st.session_state.ai_errors[current_model] = obs_error
+                    elif obs_text is not None:
+                        # --- Pass 2: Synthesis ---
+                        syn_system, syn_user = build_analysis_messages(
+                            **prompt_args, observations=_unescape_markdown(obs_text),
+                        )
+                        syn_images = images_b64 if send_images_both_passes else None
+                        result, syn_error = _run_ollama_pass(
+                            current_model, syn_system, syn_user, syn_images,
+                            label="Synthesis pass",
+                        )
+                        if syn_error:
+                            st.session_state.ai_errors[current_model] = syn_error
+                        elif result is not None:
+                            st.session_state.ai_outputs[current_model] = result
+                except Exception as e:
+                    st.session_state.ai_errors[current_model] = f"Unexpected error: {e}"
 
                 st.session_state.analysis_step = step + 1
 
@@ -1513,22 +1517,25 @@ if is_single_mode and symbol:
                 # Consensus summarizer step
                 successful = st.session_state.ai_outputs
                 st.subheader("Generating Consensus...")
-                all_model_info = fetch_ollama_models()
-                model_sizes = {
-                    m["name"]: m.get("parameter_size", "unknown")
-                    for m in all_model_info
-                }
-                consensus_sys, consensus_user = build_consensus_messages(
-                    symbol, successful, model_sizes, df, ind
-                )
-                result, con_error = _run_ollama_pass(
-                    consensus_model, consensus_sys, consensus_user,
-                    label="Consensus",
-                )
-                if con_error:
-                    st.session_state.consensus_error = con_error
-                elif result is not None:
-                    st.session_state.consensus_output = result
+                try:
+                    all_model_info = fetch_ollama_models()
+                    model_sizes = {
+                        m["name"]: m.get("parameter_size", "unknown")
+                        for m in all_model_info
+                    }
+                    consensus_sys, consensus_user = build_consensus_messages(
+                        symbol, successful, model_sizes, df, ind
+                    )
+                    result, con_error = _run_ollama_pass(
+                        consensus_model, consensus_sys, consensus_user,
+                        label="Consensus",
+                    )
+                    if con_error:
+                        st.session_state.consensus_error = con_error
+                    elif result is not None:
+                        st.session_state.consensus_output = result
+                except Exception as e:
+                    st.session_state.consensus_error = f"Unexpected error: {e}"
                 st.session_state.analyzing = False
                 st.session_state.done = True
                 st.rerun()
@@ -1644,19 +1651,24 @@ elif not is_single_mode:
                     wl_img = chart_to_base64_png(wl_fig, ind, wl_df)
                     sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df, ind)
                     with st.status(f"Scanning {current_sym} ({wl_step}/{wl_total})...", expanded=False) as wl_status:
-                        analysis_text = st.write_stream(
-                            stream_ollama_response(
-                                wl_model, sys_prompt, usr_prompt, [wl_img]
-                            )
+                        analysis_text, wl_error = _run_ollama_pass(
+                            wl_model, sys_prompt, usr_prompt, [wl_img],
+                            label=current_sym,
                         )
-                        wl_status.update(label=f"{current_sym} complete", state="complete")
+                        if analysis_text is not None:
+                            wl_status.update(label=f"{current_sym} complete", state="complete")
 
-                    latest_price = wl_df["Close"].iloc[-1]
-                    st.session_state.watchlist_results[current_sym] = {
-                        "analysis": analysis_text,
-                        "price": float(latest_price),
-                        "company": wl_company,
-                    }
+                    if wl_error:
+                        st.session_state.watchlist_results[current_sym] = {
+                            "error": wl_error,
+                        }
+                    else:
+                        latest_price = wl_df["Close"].iloc[-1]
+                        st.session_state.watchlist_results[current_sym] = {
+                            "analysis": analysis_text,
+                            "price": float(latest_price),
+                            "company": wl_company,
+                        }
 
             except Exception as e:
                 st.session_state.watchlist_results[current_sym] = {
