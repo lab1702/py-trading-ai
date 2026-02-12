@@ -1263,12 +1263,15 @@ if is_single_mode and symbol:
 
             # Save to history (once)
             if ai_outputs and not st.session_state.history_saved:
-                save_analysis(
-                    symbol, period,
-                    st.session_state.get("analysis_models", []),
-                    ai_outputs,
-                    consensus_output,
-                )
+                try:
+                    save_analysis(
+                        symbol, period,
+                        st.session_state.get("analysis_models", []),
+                        ai_outputs,
+                        consensus_output,
+                    )
+                except Exception:
+                    pass
                 st.session_state.history_saved = True
 
             # Show analysis history
