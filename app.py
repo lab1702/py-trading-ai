@@ -862,26 +862,26 @@ else:
     )
     symbol = ""
 
-def _on_period_change():
+def _on_shared_input_change():
     _on_input_change()
     _on_watchlist_input_change()
 
 period = st.sidebar.selectbox(
     "Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-    index=2, on_change=_on_period_change, disabled=locked,
+    index=2, on_change=_on_shared_input_change, disabled=locked,
 )
 
 # Sidebar: indicator toggles
 st.sidebar.header("Technical Indicators")
-show_sma = st.sidebar.checkbox("SMA (20, 50)", value=True, on_change=_on_input_change,
+show_sma = st.sidebar.checkbox("SMA (20, 50)", value=True, on_change=_on_shared_input_change,
                                disabled=locked)
-show_ema = st.sidebar.checkbox("EMA (12, 26)", value=True, on_change=_on_input_change,
+show_ema = st.sidebar.checkbox("EMA (12, 26)", value=True, on_change=_on_shared_input_change,
                                disabled=locked)
-show_bb = st.sidebar.checkbox("Bollinger Bands", value=True, on_change=_on_input_change,
+show_bb = st.sidebar.checkbox("Bollinger Bands", value=True, on_change=_on_shared_input_change,
                               disabled=locked)
-show_rsi = st.sidebar.checkbox("RSI (14)", value=True, on_change=_on_input_change,
+show_rsi = st.sidebar.checkbox("RSI (14)", value=True, on_change=_on_shared_input_change,
                                disabled=locked)
-show_macd = st.sidebar.checkbox("MACD", value=True, on_change=_on_input_change,
+show_macd = st.sidebar.checkbox("MACD", value=True, on_change=_on_shared_input_change,
                                 disabled=locked)
 
 ind = Indicators(
@@ -1016,11 +1016,11 @@ else:
         st.sidebar.warning("No vision-capable models found in Ollama.")
 
     raw_symbols = st.session_state.get("watchlist_text", "")
-    parsed_symbols = [
+    parsed_symbols = list(dict.fromkeys(
         s.strip().upper()
         for s in raw_symbols.replace("\n", ",").split(",")
         if s.strip()
-    ]
+    ))
     wl_button_disabled = (
         locked
         or not parsed_symbols
