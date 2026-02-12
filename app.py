@@ -941,6 +941,8 @@ def _run_ollama_pass(
         result = st.write_stream(
             stream_ollama_response(model, system_prompt, user_prompt, images_b64)
         )
+        if not result or not result.strip():
+            return None, f"{prefix}Model returned an empty response."
         return result, None
     except requests.ConnectionError:
         logger.warning("Cannot connect to Ollama at %s", OLLAMA_BASE_URL, exc_info=True)
