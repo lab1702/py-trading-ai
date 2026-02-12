@@ -961,8 +961,16 @@ def _run_ollama_pass(
             stream_ollama_response(model, system_prompt, user_prompt, images_b64)
         )
         if not result or not result.strip():
-            logger.warning("Model %s returned an empty response", model)
-            return None, f"{prefix}Model returned an empty response."
+            # Some models (e.g. Qwen3-VL) fail silently with multiple images.
+            # Retry with only the first image before giving up.
+            if images_b64 and len(images_b64) > 1:
+                logger.info("Model %s returned empty with %d images; retrying with 1 image", model, len(images_b64))
+                result = st.write_stream(
+                    stream_ollama_response(model, system_prompt, user_prompt, images_b64[:1])
+                )
+            if not result or not result.strip():
+                logger.warning("Model %s returned an empty response", model)
+                return None, f"{prefix}Model returned an empty response."
         return result, None
     except requests.ConnectionError:
         logger.warning("Cannot connect to Ollama at %s", OLLAMA_BASE_URL, exc_info=True)
