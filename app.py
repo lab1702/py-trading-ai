@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -1067,8 +1068,16 @@ def save_analysis(
     history.append(entry)
     # Keep only the most recent 100 entries to prevent unbounded growth
     history = history[-100:]
-    with open(ANALYSIS_HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=ANALYSIS_HISTORY_FILE.parent, suffix=".tmp"
+    )
+    try:
+        with open(fd, "w") as f:
+            json.dump(history, f, indent=2)
+        Path(tmp_path).replace(ANALYSIS_HISTORY_FILE)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
 
 
 def load_analysis_history(symbol: str, limit: int = 5) -> list[dict]:
@@ -1079,6 +1088,7 @@ def load_analysis_history(symbol: str, limit: int = 5) -> list[dict]:
         with open(ANALYSIS_HISTORY_FILE, "r") as f:
             history = json.load(f)
     except (json.JSONDecodeError, OSError):
+        logger.warning("Failed to load analysis history", exc_info=True)
         return []
     filtered = [h for h in history if h.get("symbol") == symbol.upper()]
     return filtered[-limit:]
