@@ -1265,7 +1265,7 @@ if is_single_mode:
         else:
             button_label = "Analyzing..."
     elif st.session_state.done:
-        button_label = "Done"
+        button_label = "Re-analyze"
     else:
         button_label = "Analyze with AI"
 
@@ -1322,9 +1322,6 @@ if is_single_mode:
     needs_consensus = len(selected_vision_names) >= 2 and selected_consensus_model is None
     button_disabled = locked or not symbol or not selected_vision_names or needs_consensus
 
-    if st.session_state.done:
-        button_label = "Re-analyze"
-
     if st.sidebar.button(
         button_label,
         type="primary",
@@ -1353,7 +1350,7 @@ else:
         wl_total = len(st.session_state.get("watchlist_symbols", []))
         button_label = f"Scanning ({wl_step}/{wl_total} symbols)..."
     elif st.session_state.watchlist_done:
-        button_label = "Done"
+        button_label = "Re-scan"
     else:
         button_label = "Scan Watchlist"
 
@@ -1383,9 +1380,6 @@ else:
         or not selected_watchlist_model
     )
 
-    if st.session_state.watchlist_done:
-        button_label = "Re-scan"
-
     if st.sidebar.button(
         button_label,
         type="primary",
@@ -1398,7 +1392,6 @@ else:
         st.session_state.watchlist_symbols = parsed_symbols
         st.session_state.watchlist_results = {}
         st.session_state.watchlist_model = selected_watchlist_model
-        st.session_state.history_saved = False
         st.rerun()
 
 
