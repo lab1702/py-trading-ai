@@ -942,6 +942,7 @@ def _run_ollama_pass(
             stream_ollama_response(model, system_prompt, user_prompt, images_b64)
         )
         if not result or not result.strip():
+            logger.warning("Model %s returned an empty response", model)
             return None, f"{prefix}Model returned an empty response."
         return result, None
     except requests.ConnectionError:
