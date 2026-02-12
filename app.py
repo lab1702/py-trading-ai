@@ -116,6 +116,8 @@ def fetch_next_earnings(symbol: str) -> str | None:
             return None
         nearest = future.index.min()
         days = (nearest - now).days
+        if days == 0:
+            return f"today ({nearest.strftime('%Y-%m-%d')})"
         return f"in {days} days ({nearest.strftime('%Y-%m-%d')})"
     except Exception:
         logger.warning("Failed to fetch earnings dates for %s", symbol, exc_info=True)
@@ -488,6 +490,18 @@ def chart_to_base64_png(fig: go.Figure, ind: Indicators, df: pd.DataFrame) -> st
     return base64.b64encode(img_bytes).decode("utf-8")
 
 
+def _price_change_stats(df: pd.DataFrame) -> tuple[float, float, float, float]:
+    """Return (pct_change, avg_vol, latest_vol, vol_ratio) for the last bar."""
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else latest
+    prev_close = prev["Close"]
+    pct_change = ((latest["Close"] - prev_close) / prev_close) * 100 if prev_close != 0 else 0.0
+    avg_vol = df["Volume"].mean()
+    latest_vol = latest["Volume"]
+    vol_ratio = latest_vol / avg_vol if avg_vol > 0 else 0
+    return pct_change, avg_vol, latest_vol, vol_ratio
+
+
 def _build_prompt_data_lines(
     symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
     fundamentals: dict | None = None,
@@ -501,10 +515,7 @@ def _build_prompt_data_lines(
     """Assemble the shared data lines used by both observation and analysis prompts."""
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else latest
-    pct_change = ((latest["Close"] - prev["Close"]) / prev["Close"]) * 100
-    avg_vol = df["Volume"].mean()
-    latest_vol = latest["Volume"]
-    vol_ratio = latest_vol / avg_vol if avg_vol > 0 else 0
+    pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
 
     active = ind.active_labels()
     indicator_text = ", ".join(active) if active else "None"
@@ -930,13 +941,16 @@ def _run_ollama_pass(
         )
         return result, None
     except requests.ConnectionError:
+        logger.warning("Cannot connect to Ollama at %s", OLLAMA_BASE_URL, exc_info=True)
         return None, (
             f"{prefix}Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
             "Make sure Ollama is running."
         )
     except requests.HTTPError as e:
+        logger.warning("Ollama HTTP error", exc_info=True)
         return None, f"{prefix}Ollama returned an error: {e}"
     except Exception as e:
+        logger.warning("Unexpected error during Ollama pass", exc_info=True)
         return None, f"{prefix}Unexpected error: {e}"
 
 
@@ -1006,11 +1020,7 @@ def build_watchlist_prompt(
     )
 
     latest = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else latest
-    pct_change = ((latest["Close"] - prev["Close"]) / prev["Close"]) * 100
-    avg_vol = df["Volume"].mean()
-    latest_vol = latest["Volume"]
-    vol_ratio = latest_vol / avg_vol if avg_vol > 0 else 0
+    pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
 
     lines = [
         f"Quick scan for {symbol.upper()}.\n",
@@ -1118,6 +1128,8 @@ for key, default in {
     "watchlist_symbols": [],
     "watchlist_step": 0,
     "watchlist_results": {},
+    "watchlist_model": None,
+    "chart_b64": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1133,7 +1145,7 @@ def _on_input_change():
     st.session_state.analysis_step = 0
     st.session_state.analysis_models = []
     st.session_state.consensus_model_name = None
-    st.session_state.pop("chart_b64", None)
+    st.session_state.chart_b64 = None
     st.session_state.strategic_chart_b64 = None
     st.session_state.strategic_chart_attempted = False
     st.session_state.history_saved = False
@@ -1262,7 +1274,7 @@ if is_single_mode:
         if "selected_vision" not in st.session_state:
             st.session_state.selected_vision = []
 
-        all_selected = len(vision_names) > 0 and set(st.session_state.selected_vision) == set(vision_names)
+        all_selected = set(st.session_state.selected_vision) == set(vision_names)
         st.session_state.select_all_vision = all_selected
 
         def _toggle_select_all():
@@ -1327,7 +1339,7 @@ if is_single_mode:
         st.session_state.consensus_output = ""
         st.session_state.consensus_error = ""
         st.session_state.history_saved = False
-        st.session_state.pop("chart_b64", None)
+        st.session_state.chart_b64 = None
         st.session_state.strategic_chart_b64 = None
         st.session_state.strategic_chart_attempted = False
         st.rerun()
@@ -1417,7 +1429,7 @@ if is_single_mode and symbol:
             total = len(models)
 
             # Capture chart image(s) once on first step
-            if "chart_b64" not in st.session_state:
+            if st.session_state.chart_b64 is None:
                 with st.spinner("Capturing chart..."):
                     try:
                         st.session_state.chart_b64 = chart_to_base64_png(fig, ind, df)
@@ -1431,7 +1443,7 @@ if is_single_mode and symbol:
             if (
                 strategic_period
                 and not st.session_state.strategic_chart_attempted
-                and "chart_b64" in st.session_state
+                and st.session_state.chart_b64 is not None
             ):
                 st.session_state.strategic_chart_attempted = True
                 try:
@@ -1447,7 +1459,7 @@ if is_single_mode and symbol:
                 except Exception:
                     logger.warning("Failed to capture strategic chart", exc_info=True)
 
-            if "chart_b64" not in st.session_state:
+            if st.session_state.chart_b64 is None:
                 st.session_state.analyzing = False
                 st.session_state.done = True
                 st.rerun()
@@ -1472,7 +1484,7 @@ if is_single_mode and symbol:
                 news_headlines=news_headlines,
             )
 
-            if step >= 1 and step <= total:
+            if 1 <= step <= total:
                 # Vision model analysis step (two-pass)
                 current_model = models[step - 1]
                 st.subheader(f"AI Analysis - {current_model} ({step}/{total})")
@@ -1644,7 +1656,7 @@ elif not is_single_mode:
         wl_total = len(wl_symbols)
         wl_model = st.session_state.get("watchlist_model")
 
-        if wl_step >= 1 and wl_step <= wl_total:
+        if 1 <= wl_step <= wl_total:
             current_sym = wl_symbols[wl_step - 1]
 
             try:
