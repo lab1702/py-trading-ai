@@ -896,7 +896,13 @@ def stream_ollama_response(
     images_b64: list[str] | None = None,
     temperature: float = 0.4,
 ):
-    """Generator that yields text chunks from the Ollama /api/chat endpoint."""
+    """Generator that yields text chunks from the Ollama /api/chat endpoint.
+
+    Some models (e.g. Qwen3) use a "thinking" mode where initial tokens
+    arrive in a ``thinking`` field instead of ``content``.  We buffer those
+    thinking tokens and only emit them as a fallback if the model finishes
+    without producing any regular content.
+    """
     user_message: dict = {"role": "user", "content": user_prompt}
     if images_b64:
         user_message["images"] = images_b64
@@ -907,19 +913,31 @@ def stream_ollama_response(
             user_message,
         ],
         "stream": True,
+        "think": False,
         "options": {"temperature": temperature},
     }
     with requests.post(
         f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=True, timeout=(10, 600)
     ) as resp:
         resp.raise_for_status()
+        thinking_buf: list[str] = []
+        has_content = False
         for line in resp.iter_lines():
             if line:
                 data = json.loads(line)
-                token = data.get("message", {}).get("content", "")
+                msg = data.get("message", {})
+                token = msg.get("content", "")
                 if token:
+                    has_content = True
                     yield _escape_markdown(token)
+                else:
+                    thinking_token = msg.get("thinking", "")
+                    if thinking_token:
+                        thinking_buf.append(thinking_token)
                 if data.get("done", False):
+                    if not has_content and thinking_buf:
+                        logger.info("Model %s produced only thinking output; using as fallback", model)
+                        yield _escape_markdown("".join(thinking_buf))
                     return
 
 
