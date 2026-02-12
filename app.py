@@ -1,9 +1,9 @@
 import base64
 import json
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -23,7 +23,10 @@ STRATEGIC_PERIOD_MAP = {
     "2y": "5y",
 }
 
-ANALYSIS_HISTORY_FILE = "analysis_history.json"
+ANALYSIS_HISTORY_FILE = Path(__file__).parent / "analysis_history.json"
+
+CHART_BASE_HEIGHT = 500
+CHART_SUBCHART_HEIGHT = 200
 
 
 @dataclass
@@ -443,10 +446,8 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
     if show_adx:
         _add_adx(fig, df, current_row)
 
-    base_height = 500
-    sub_chart_height = 200
-    extra = int(sum([show_rsi, show_macd, show_atr, show_adx]))
-    chart_height = base_height + extra * sub_chart_height
+    extra = sum([show_rsi, show_macd, show_atr, show_adx])
+    chart_height = CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT
 
     # Dark theme
     grid_color = "#2a2a4a"
@@ -473,7 +474,7 @@ def chart_to_base64_png(fig: go.Figure, ind: Indicators, df: pd.DataFrame) -> st
         ind.atr and df["ATR"].notna().any(),
         ind.adx and df["ADX"].notna().any(),
     ])
-    img_height = int(600 + extra * 200)
+    img_height = CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT
     img_bytes = fig.to_image(format="png", width=1200, height=img_height, scale=2)
     return base64.b64encode(img_bytes).decode("utf-8")
 
@@ -1017,7 +1018,7 @@ def save_analysis(
         "consensus": _unescape_markdown(consensus) if consensus else "",
     }
     history: list[dict] = []
-    if os.path.exists(ANALYSIS_HISTORY_FILE):
+    if ANALYSIS_HISTORY_FILE.exists():
         try:
             with open(ANALYSIS_HISTORY_FILE, "r") as f:
                 history = json.load(f)
@@ -1032,7 +1033,7 @@ def save_analysis(
 
 def load_analysis_history(symbol: str, limit: int = 5) -> list[dict]:
     """Load recent analysis history for a symbol."""
-    if not os.path.exists(ANALYSIS_HISTORY_FILE):
+    if not ANALYSIS_HISTORY_FILE.exists():
         return []
     try:
         with open(ANALYSIS_HISTORY_FILE, "r") as f:
@@ -1054,6 +1055,7 @@ for key, default in {
     "done": False,
     "history_saved": False,
     "strategic_chart_b64": None,
+    "strategic_chart_attempted": False,
     "ai_outputs": {},
     "ai_errors": {},
     "consensus_output": "",
@@ -1083,6 +1085,7 @@ def _on_input_change():
     st.session_state.consensus_model_name = None
     st.session_state.pop("chart_b64", None)
     st.session_state.strategic_chart_b64 = None
+    st.session_state.strategic_chart_attempted = False
     st.session_state.history_saved = False
 
 
@@ -1276,6 +1279,7 @@ if is_single_mode:
         st.session_state.history_saved = False
         st.session_state.pop("chart_b64", None)
         st.session_state.strategic_chart_b64 = None
+        st.session_state.strategic_chart_attempted = False
         st.rerun()
 
 else:
@@ -1373,12 +1377,13 @@ if is_single_mode and symbol:
                         st.session_state.ai_errors = {"_chart": f"Chart export failed: {e}"}
                         st.rerun()
 
-            # Capture strategic chart once (None = not attempted, False = failed)
+            # Capture strategic chart once (skipped if already attempted)
             if (
                 strategic_period
-                and st.session_state.strategic_chart_b64 is None
+                and not st.session_state.strategic_chart_attempted
                 and "chart_b64" in st.session_state
             ):
+                st.session_state.strategic_chart_attempted = True
                 try:
                     strategic_df = fetch_stock_data(symbol, strategic_period)
                     if strategic_df is not None and not strategic_df.empty:
@@ -1389,10 +1394,8 @@ if is_single_mode and symbol:
                         st.session_state.strategic_chart_b64 = chart_to_base64_png(
                             strategic_fig, ind, strategic_df
                         )
-                    else:
-                        st.session_state.strategic_chart_b64 = False
                 except Exception:
-                    st.session_state.strategic_chart_b64 = False
+                    pass
 
             if "chart_b64" not in st.session_state:
                 st.session_state.analyzing = False
@@ -1402,7 +1405,7 @@ if is_single_mode and symbol:
             # Build image list
             images_b64 = [st.session_state.chart_b64]
             actual_strategic = strategic_period
-            if st.session_state.strategic_chart_b64:
+            if st.session_state.strategic_chart_b64 is not None:
                 images_b64.append(st.session_state.strategic_chart_b64)
             else:
                 actual_strategic = None
