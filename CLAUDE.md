@@ -29,7 +29,8 @@ This is a single-file application (`app.py`, ~1750 lines). All logic lives there
 - `_compute_indicators()` adds technical indicator columns (SMA, EMA, Bollinger Bands, RSI, MACD, ATR, ADX) to the DataFrame in-place. ADX has a 28-bar warmup period blanked to NaN.
 - `fetch_company_name()`, `fetch_fundamentals()`, `fetch_next_earnings()`, `fetch_news_headlines()`, `fetch_market_context()` — supplementary data fetchers, all cached 5 min. These run in parallel via `ThreadPoolExecutor` on cold cache to reduce initial load time.
 - `compute_support_resistance()` finds support/resistance levels from local extrema using a sliding window (`>=`/`<=` comparisons to avoid float-equality issues), then clusters nearby levels.
-- Symbol input is sanitized via `_SYMBOL_RE` (strips characters outside `A-Za-z0-9.\-^=`) before being passed to yfinance — applies to both single-symbol and watchlist modes.
+- Symbol input is sanitized via `_SYMBOL_RE` (strips characters outside `A-Za-z0-9.\-^=`) before being passed to yfinance — applies to both single-symbol and watchlist modes. Watchlist parsing filters out symbols that become empty after sanitization.
+- `_price_change_stats()` returns `(prev_close, pct_change, avg_vol, latest_vol, vol_ratio)` — callers use the returned `prev_close` rather than recomputing it.
 
 ### Chart Layer
 - `build_candlestick_chart()` constructs a Plotly `Figure` with dynamic subplots — the number of rows varies based on which indicators (RSI, MACD, ATR, ADX) are enabled and have valid data. Helper functions `_add_overlays`, `_add_volume`, `_add_rsi`, `_add_macd`, `_add_atr`, `_add_adx` each add traces to specific subplot rows.
