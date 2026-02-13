@@ -39,7 +39,8 @@ A web-based stock technical analysis tool that combines interactive candlestick 
 git clone https://github.com/lab1702/py-trading-ai
 cd py-trading-ai
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Linux/Mac
+# .venv\Scripts\activate    # Windows
 pip install -r requirements.txt
 ```
 
@@ -61,6 +62,7 @@ The app opens at `http://localhost:8501`. Use the sidebar to switch between two 
 4. Select one or more vision-capable models for chart analysis
 5. Optionally select a consensus model (enabled when 2+ vision models are chosen) to synthesize all analyses
 6. Click **Analyze with AI** to get streamed two-pass AI analysis of the chart
+7. Use **Download Analysis** to export results as Markdown
 
 ### Watchlist
 
@@ -68,6 +70,7 @@ The app opens at `http://localhost:8501`. Use the sidebar to switch between two 
 2. Select a time period and indicators
 3. Select a single vision model
 4. Click **Scan Watchlist** for a quick trend/outlook scan of each symbol
+5. Use **Download Scan Results** to export the scan as Markdown
 
 ## Tech Stack
 
@@ -79,3 +82,9 @@ The app opens at `http://localhost:8501`. Use the sidebar to switch between two 
 | Data processing | Pandas, NumPy |
 | Image export | Kaleido (0.2.x — self-contained, no system browser needed) |
 | AI analysis | Ollama (vision models for chart analysis, any model for consensus) |
+
+## Troubleshooting
+
+- **"No vision-capable models found"** — Make sure Ollama is running (`ollama serve`) and you've pulled at least one vision model (`ollama pull gemma3`).
+- **Empty or no response from a model** — Some models struggle with multi-image input. The app retries automatically with a single image, but if issues persist, try a different model.
+- **Chart export fails** — Kaleido is pinned to 0.2.x which bundles its own Chromium. If you see export errors, ensure `kaleido` installed correctly (`pip install "kaleido>=0.2.1,<1"`).
