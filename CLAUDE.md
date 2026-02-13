@@ -29,7 +29,7 @@ This is a single-file application (`app.py`, ~1750 lines). All logic lives there
 - `_compute_indicators()` adds technical indicator columns (SMA, EMA, Bollinger Bands, RSI, MACD, ATR, ADX) to the DataFrame in-place. ADX has a 28-bar warmup period blanked to NaN.
 - `fetch_company_name()`, `fetch_fundamentals()`, `fetch_next_earnings()`, `fetch_news_headlines()`, `fetch_market_context()` — supplementary data fetchers, all cached 5 min. These run in parallel via `ThreadPoolExecutor` on cold cache to reduce initial load time.
 - `compute_support_resistance()` finds support/resistance levels from local extrema using a sliding window (`>=`/`<=` comparisons to avoid float-equality issues), then clusters nearby levels.
-- Symbol input is sanitized via `_SYMBOL_RE` (strips characters outside `A-Za-z0-9.\-^=`) before being passed to yfinance.
+- Symbol input is sanitized via `_SYMBOL_RE` (strips characters outside `A-Za-z0-9.\-^=`) before being passed to yfinance — applies to both single-symbol and watchlist modes.
 
 ### Chart Layer
 - `build_candlestick_chart()` constructs a Plotly `Figure` with dynamic subplots — the number of rows varies based on which indicators (RSI, MACD, ATR, ADX) are enabled and have valid data. Helper functions `_add_overlays`, `_add_volume`, `_add_rsi`, `_add_macd`, `_add_atr`, `_add_adx` each add traces to specific subplot rows.
@@ -52,14 +52,15 @@ This is a single-file application (`app.py`, ~1750 lines). All logic lives there
 - Caveat: the pair is not a true round-trip for text that already contains literal `\$` or `\~\~`, but this is acceptable since model output virtually never contains those sequences.
 
 ### Persistence
-- `save_analysis()` / `load_analysis_history()` persist analyses to `analysis_history.json` (capped at 100 entries, atomic writes via temp file + rename). The temp-file cleanup catches `Exception` (not `BaseException`) so `KeyboardInterrupt`/`SystemExit` propagate cleanly. This file is gitignored.
+- `save_analysis()` / `load_analysis_history()` persist analyses to `analysis_history.json` (capped at 100 entries, atomic writes via temp file + rename). The temp-file cleanup catches `Exception` (not `BaseException`) so `KeyboardInterrupt`/`SystemExit` propagate cleanly. The `history_saved` flag is only set on successful save, allowing retry on transient failures. This file is gitignored.
 
 ### UI Layer (bottom of file)
 - Two modes selectable via sidebar radio: **Single Symbol** and **Watchlist**.
-- Uses `st.session_state` with `analyzing`/`done` flags and a step-based pipeline (`analysis_step`) to process one model per `st.rerun()` cycle. Inputs are locked during analysis via a `locked` flag. A "Stop after current step" button appears in the sidebar during analysis, allowing users to cancel between rerun cycles.
+- Uses `st.session_state` with `analyzing`/`done` flags and a step-based pipeline (`analysis_step`) to process one model per `st.rerun()` cycle. Inputs are locked during analysis via a `locked` flag. A "Stop after current step" button appears in the sidebar during analysis, allowing users to cancel between rerun cycles (shows a toast notification on stop).
 - Single mode: vision model multiselect, consensus model selector (enabled at 2+ vision models), "Send chart to both passes" toggle.
 - Watchlist mode: single vision model selector, processes symbols sequentially one per rerun.
 - With a single vision model, output renders directly (no expanders, no consensus). With multiple models, individual analyses appear in collapsed expanders followed by a consensus summary.
+- Both modes offer a "Download" button to export results as Markdown (single-symbol analysis or watchlist scan).
 
 ## Key Design Decisions
 
