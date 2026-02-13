@@ -512,7 +512,6 @@ def _build_prompt_data_lines(
 ) -> list[str]:
     """Assemble the shared data lines used by both observation and analysis prompts."""
     latest = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else latest
     pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
 
     active = ind.active_labels()
@@ -1223,6 +1222,7 @@ if locked:
         st.session_state.watchlist_analyzing = False
         st.session_state.done = bool(st.session_state.ai_outputs)
         st.session_state.watchlist_done = bool(st.session_state.watchlist_results)
+        st.toast("Analysis stopped.")
 
     st.sidebar.button(
         "Stop after current step",
@@ -1427,7 +1427,7 @@ else:
 
     raw_symbols = st.session_state.get("watchlist_text", "")
     parsed_symbols = list(dict.fromkeys(
-        s.strip().upper()
+        _SYMBOL_RE.sub("", s.strip()).upper()
         for s in raw_symbols.replace("\n", ",").split(",")
         if s.strip()
     ))
@@ -1659,8 +1659,9 @@ if is_single_mode and symbol:
 
             # Export analysis as Markdown
             if ai_outputs:
+                now = datetime.now()
                 md_parts = [f"# {symbol.upper()} Analysis ({period})\n"]
-                md_parts.append(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+                md_parts.append(f"Date: {now.strftime('%Y-%m-%d %H:%M')}\n")
                 for model_name in st.session_state.get("analysis_models", []):
                     if model_name in ai_outputs:
                         md_parts.append(f"\n## {model_name}\n")
@@ -1669,11 +1670,10 @@ if is_single_mode and symbol:
                     md_parts.append("\n## Consensus Summary\n")
                     md_parts.append(_unescape_markdown(consensus_output))
                 md_text = "\n".join(md_parts)
-                date_str = datetime.now().strftime("%Y%m%d")
                 st.download_button(
                     "Download Analysis",
                     data=md_text,
-                    file_name=f"{symbol.upper()}_analysis_{date_str}.md",
+                    file_name=f"{symbol.upper()}_analysis_{now.strftime('%Y%m%d')}.md",
                     mime="text/markdown",
                 )
 
@@ -1686,9 +1686,9 @@ if is_single_mode and symbol:
                         ai_outputs,
                         consensus_output,
                     )
+                    st.session_state.history_saved = True
                 except Exception:
                     logger.warning("Failed to save analysis history", exc_info=True)
-                st.session_state.history_saved = True
 
             # Show analysis history
             history = load_analysis_history(symbol)
@@ -1773,3 +1773,27 @@ elif not is_single_mode:
                 price = res.get("price", 0)
                 with st.expander(f"{sym} — ${price:.2f}", expanded=False):
                     st.markdown(res["analysis"])
+
+        # Export watchlist scan as Markdown
+        scan_parts = [f"# Watchlist Scan ({period})\n"]
+        now = datetime.now()
+        scan_parts.append(f"Date: {now.strftime('%Y-%m-%d %H:%M')}\n")
+        has_analyses = False
+        for sym in st.session_state.watchlist_symbols:
+            res = results.get(sym, {})
+            if "analysis" in res:
+                has_analyses = True
+                company = res.get("company", sym)
+                price = res.get("price", 0)
+                scan_parts.append(f"\n## {company} ({sym}) — ${price:.2f}\n")
+                scan_parts.append(_unescape_markdown(res["analysis"]))
+            elif "error" in res:
+                scan_parts.append(f"\n## {sym} — Error\n")
+                scan_parts.append(res["error"])
+        if has_analyses:
+            st.download_button(
+                "Download Scan Results",
+                data="\n".join(scan_parts),
+                file_name=f"watchlist_scan_{now.strftime('%Y%m%d')}.md",
+                mime="text/markdown",
+            )
