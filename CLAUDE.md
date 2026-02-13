@@ -74,7 +74,6 @@ This is a single-file application (`app.py`, ~1750 lines). All logic lives there
 
 ## Dependencies
 
-Python 3.13+. Key packages: `streamlit`, `plotly`, `yfinance`, `requests`, `kaleido` (for Plotly image export, pinned to 0.2.x), `lxml`. NumPy and Pandas are transitive deps used directly.
+Python 3.13+. Key packages: `streamlit`, `plotly`, `yfinance`, `requests`, `kaleido` (for Plotly image export), `lxml`. NumPy and Pandas are transitive deps used directly.
 
-- **Kaleido is pinned to <1** because Kaleido 1.x depends on `choreographer`, which requires Chrome/Chromium installed on the system. Kaleido 0.2.x bundles its own Chromium binary and is fully self-contained.
 - `logging.basicConfig()` is called at module level so that `logger.warning()` / `logger.info()` calls throughout the app produce visible output.

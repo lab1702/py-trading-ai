@@ -1,6 +1,6 @@
 streamlit
 plotly
-yfinance>=0.2.31
+yfinance
 requests
-kaleido>=0.2.1,<1
+kaleido
 lxml
