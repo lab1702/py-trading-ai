@@ -488,16 +488,16 @@ def chart_to_base64_png(fig: go.Figure) -> str:
     return base64.b64encode(img_bytes).decode("utf-8")
 
 
-def _price_change_stats(df: pd.DataFrame) -> tuple[float, float, float, float]:
-    """Return (pct_change, avg_vol, latest_vol, vol_ratio) for the last bar."""
+def _price_change_stats(df: pd.DataFrame) -> tuple[float, float, float, float, float]:
+    """Return (prev_close, pct_change, avg_vol, latest_vol, vol_ratio) for the last bar."""
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else latest
-    prev_close = prev["Close"]
+    prev_close = float(prev["Close"])
     pct_change = ((latest["Close"] - prev_close) / prev_close) * 100 if prev_close != 0 else 0.0
     avg_vol = df["Volume"].mean()
     latest_vol = latest["Volume"]
     vol_ratio = latest_vol / avg_vol if avg_vol > 0 else 0
-    return pct_change, avg_vol, latest_vol, vol_ratio
+    return prev_close, pct_change, avg_vol, latest_vol, vol_ratio
 
 
 def _build_prompt_data_lines(
@@ -512,8 +512,7 @@ def _build_prompt_data_lines(
 ) -> list[str]:
     """Assemble the shared data lines used by both observation and analysis prompts."""
     latest = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else latest
-    pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
+    prev_close, pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
 
     active = ind.active_labels()
     indicator_text = ", ".join(active) if active else "None"
@@ -535,7 +534,7 @@ def _build_prompt_data_lines(
         f"Timeframe: {period} (latest bar is the most recent trading day)\n",
         "Key data points:",
         f"- Latest close: ${latest['Close']:.2f}",
-        f"- Previous close: ${prev['Close']:.2f}",
+        f"- Previous close: ${prev_close:.2f}",
         f"- Change: {pct_change:+.2f}%",
         f"- Period high: ${df['High'].max():.2f}",
         f"- Period low: ${df['Low'].min():.2f}",
@@ -1063,7 +1062,7 @@ def build_watchlist_prompt(
     )
 
     latest = df.iloc[-1]
-    pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
+    _prev_close, pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
 
     lines = [
         f"Quick scan for {symbol.upper()}.\n",
@@ -1249,7 +1248,7 @@ if is_single_mode:
         disabled=locked,
     )
 else:
-    watchlist_text = st.sidebar.text_area(
+    st.sidebar.text_area(
         "Symbols (comma or newline separated)",
         key="watchlist_text",
         placeholder="AAPL, MSFT, GOOGL\nAMZN, TSLA",
@@ -1428,9 +1427,8 @@ else:
 
     raw_symbols = st.session_state.get("watchlist_text", "")
     parsed_symbols = list(dict.fromkeys(
-        _SYMBOL_RE.sub("", s.strip()).upper()
-        for s in raw_symbols.replace("\n", ",").split(",")
-        if s.strip()
+        cleaned for s in raw_symbols.replace("\n", ",").split(",")
+        if (cleaned := _SYMBOL_RE.sub("", s.strip()).upper())
     ))
     wl_button_disabled = (
         locked
