@@ -265,7 +265,7 @@ def compute_support_resistance(
             else:
                 clusters.append([p])
         clusters.sort(key=len, reverse=True)
-        return [sum(c) / len(c) for c in clusters[:n_levels]]
+        return sorted(sum(c) / len(c) for c in clusters[:n_levels])
 
     return cluster_levels(support_pts), cluster_levels(resistance_pts)
 
@@ -934,6 +934,8 @@ def stream_ollama_response(
                 except json.JSONDecodeError:
                     logger.warning("Skipping malformed JSON from Ollama: %s", line[:200])
                     continue
+                if data.get("error"):
+                    raise RuntimeError(f"Ollama error: {data['error']}")
                 msg = data.get("message", {})
                 token = msg.get("content", "")
                 if token:
@@ -987,6 +989,12 @@ def _run_ollama_pass(
         return None, (
             f"{prefix}Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
             "Make sure Ollama is running."
+        )
+    except requests.Timeout:
+        logger.warning("Ollama request timed out", exc_info=True)
+        return None, (
+            f"{prefix}Ollama is not responding (timed out). "
+            "Is a model loaded? Try again or check Ollama status."
         )
     except requests.HTTPError as e:
         logger.warning("Ollama HTTP error", exc_info=True)
