@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -15,7 +16,10 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+logging.basicConfig()
 logger = logging.getLogger(__name__)
+
+_SYMBOL_RE = re.compile(r"[^A-Za-z0-9.\-^=]")
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -243,10 +247,10 @@ def compute_support_resistance(
 
     for i in range(window, len(df) - window):
         segment_high = highs.iloc[i - window:i + window + 1]
-        if highs.iloc[i] == segment_high.max():
+        if highs.iloc[i] >= segment_high.max():
             resistance_pts.append(float(highs.iloc[i]))
         segment_low = lows.iloc[i - window:i + window + 1]
-        if lows.iloc[i] == segment_low.min():
+        if lows.iloc[i] <= segment_low.min():
             support_pts.append(float(lows.iloc[i]))
 
     def cluster_levels(points: list[float]) -> list[float]:
@@ -478,14 +482,8 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
     return fig
 
 
-def chart_to_base64_png(fig: go.Figure, ind: Indicators, df: pd.DataFrame) -> str:
-    extra = sum([
-        ind.rsi and df["RSI"].notna().any(),
-        ind.macd and df["MACD"].notna().any(),
-        ind.atr and df["ATR"].notna().any(),
-        ind.adx and df["ADX"].notna().any(),
-    ])
-    img_height = int(CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT)
+def chart_to_base64_png(fig: go.Figure) -> str:
+    img_height = int(fig.layout.height)
     img_bytes = fig.to_image(format="png", width=1200, height=img_height, scale=2)
     return base64.b64encode(img_bytes).decode("utf-8")
 
@@ -695,11 +693,12 @@ def _build_prompt_data_lines(
     recent = df.tail(5)
     lines.append("\nRecent price action (last 5 bars):")
     lines.append("Date | Open | High | Low | Close | Volume")
-    for idx, row in recent.iterrows():
+    for row in recent.itertuples():
+        idx = row.Index
         date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
         lines.append(
-            f"{date_str} | ${row['Open']:.2f} | ${row['High']:.2f} | "
-            f"${row['Low']:.2f} | ${row['Close']:.2f} | {row['Volume']:,.0f}"
+            f"{date_str} | ${row.Open:.2f} | ${row.High:.2f} | "
+            f"${row.Low:.2f} | ${row.Close:.2f} | {row.Volume:,.0f}"
         )
 
     lines.append(f"\nVisible indicators on chart: {indicator_text}")
@@ -880,12 +879,20 @@ def _escape_markdown(text: str) -> str:
 
     Only escapes $ (LaTeX trigger) and ~~ (strikethrough). Leaves _ alone
     since models produce intentional markdown formatting with underscores.
+
+    Note: this is NOT a true inverse of _unescape_markdown for text that
+    already contains literal ``\\$`` or ``\\~\\~`` — those will round-trip
+    incorrectly.  This is acceptable because Ollama model output virtually
+    never contains those escape sequences.
     """
     return text.replace("$", "\\$").replace("~~", "\\~\\~")
 
 
 def _unescape_markdown(text: str) -> str:
-    """Reverse _escape_markdown so raw text can be re-used in prompts."""
+    """Reverse _escape_markdown so raw text can be re-used in prompts.
+
+    See caveat on _escape_markdown about round-trip fidelity.
+    """
     return text.replace("\\~\\~", "~~").replace("\\$", "$")
 
 
@@ -923,7 +930,11 @@ def stream_ollama_response(
         has_content = False
         for line in resp.iter_lines():
             if line:
-                data = json.loads(line)
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping malformed JSON from Ollama: %s", line[:200])
+                    continue
                 msg = data.get("message", {})
                 token = msg.get("content", "")
                 if token:
@@ -1118,7 +1129,7 @@ def save_analysis(
         with open(fd, "w") as f:
             json.dump(history, f, indent=2)
         Path(tmp_path).replace(ANALYSIS_HISTORY_FILE)
-    except BaseException:
+    except Exception:
         Path(tmp_path).unlink(missing_ok=True)
         raise
 
@@ -1186,7 +1197,8 @@ def _on_input_change():
 
 def _on_watchlist_input_change():
     """Clear watchlist results when inputs change."""
-    st.session_state.watchlist_text = st.session_state.watchlist_text.upper()
+    raw = st.session_state.get("watchlist_text", "")
+    st.session_state.watchlist_text = raw.upper()
     st.session_state.watchlist_done = False
     st.session_state.watchlist_results = {}
     st.session_state.watchlist_step = 0
@@ -1199,11 +1211,25 @@ def _on_shared_input_change():
 
 
 def _uppercase_symbol():
-    st.session_state.symbol = st.session_state.symbol.strip().upper()
+    st.session_state.symbol = _SYMBOL_RE.sub("", st.session_state.symbol.strip()).upper()
     _on_input_change()
 
 
 locked = st.session_state.analyzing or st.session_state.watchlist_analyzing
+
+if locked:
+    def _stop_analysis():
+        st.session_state.analyzing = False
+        st.session_state.watchlist_analyzing = False
+        st.session_state.done = bool(st.session_state.ai_outputs)
+        st.session_state.watchlist_done = bool(st.session_state.watchlist_results)
+
+    st.sidebar.button(
+        "Stop after current step",
+        on_click=_stop_analysis,
+        type="secondary",
+        use_container_width=True,
+    )
 
 # Sidebar: mode selection
 mode = st.sidebar.radio(
@@ -1430,12 +1456,19 @@ else:
 
 if is_single_mode and symbol:
     with st.spinner("Fetching market data..."):
-        df = fetch_stock_data(symbol, period)
-        company_name = fetch_company_name(symbol)
-        fundamentals = fetch_fundamentals(symbol)
-        earnings_info = fetch_next_earnings(symbol)
-        market_ctx = fetch_market_context(period)
-        news_headlines = fetch_news_headlines(symbol)
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            fut_df = pool.submit(fetch_stock_data, symbol, period)
+            fut_name = pool.submit(fetch_company_name, symbol)
+            fut_fund = pool.submit(fetch_fundamentals, symbol)
+            fut_earn = pool.submit(fetch_next_earnings, symbol)
+            fut_mkt = pool.submit(fetch_market_context, period)
+            fut_news = pool.submit(fetch_news_headlines, symbol)
+        df = fut_df.result()
+        company_name = fut_name.result()
+        fundamentals = fut_fund.result()
+        earnings_info = fut_earn.result()
+        market_ctx = fut_mkt.result()
+        news_headlines = fut_news.result()
 
     if df is None or df.empty:
         st.error(f"No data found for **{symbol}**. Check the symbol and try again.")
@@ -1458,7 +1491,7 @@ if is_single_mode and symbol:
             if st.session_state.chart_b64 is None:
                 with st.spinner("Capturing chart..."):
                     try:
-                        st.session_state.chart_b64 = chart_to_base64_png(fig, ind, df)
+                        st.session_state.chart_b64 = chart_to_base64_png(fig)
                     except Exception as e:
                         st.session_state.analyzing = False
                         st.session_state.done = True
@@ -1480,7 +1513,7 @@ if is_single_mode and symbol:
                             strategic_df, symbol, ind, title=strategic_title
                         )
                         st.session_state.strategic_chart_b64 = chart_to_base64_png(
-                            strategic_fig, ind, strategic_df
+                            strategic_fig
                         )
                 except Exception:
                     logger.warning("Failed to capture strategic chart", exc_info=True)
@@ -1566,10 +1599,9 @@ if is_single_mode and symbol:
                 successful = st.session_state.ai_outputs
                 st.subheader("Generating Consensus...")
                 try:
-                    all_model_info = fetch_ollama_models()
                     model_sizes = {
                         m["name"]: m.get("parameter_size", "unknown")
-                        for m in all_model_info
+                        for m in available_models
                     }
                     consensus_sys, consensus_user = build_consensus_messages(
                         symbol, successful, model_sizes, df, ind
@@ -1696,7 +1728,7 @@ elif not is_single_mode:
                 else:
                     wl_title = f"{wl_company} ({current_sym})"
                     wl_fig = build_candlestick_chart(wl_df, current_sym, ind, title=wl_title)
-                    wl_img = chart_to_base64_png(wl_fig, ind, wl_df)
+                    wl_img = chart_to_base64_png(wl_fig)
                     sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df, ind)
                     with st.status(f"Scanning {current_sym} ({wl_step}/{wl_total})...", expanded=False) as wl_status:
                         analysis_text, wl_error = _run_ollama_pass(
