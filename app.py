@@ -512,6 +512,7 @@ def _build_prompt_data_lines(
 ) -> list[str]:
     """Assemble the shared data lines used by both observation and analysis prompts."""
     latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else latest
     pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
 
     active = ind.active_labels()
