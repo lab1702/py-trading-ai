@@ -20,6 +20,7 @@ logging.basicConfig()
 logger = logging.getLogger(__name__)
 
 _SYMBOL_RE = re.compile(r"[^A-Za-z0-9.\-^=]")
+_HOST_RE = re.compile(r"^[A-Za-z0-9.\-:]+$")
 
 _OLLAMA_DEFAULT_HOST = "localhost"
 
@@ -908,6 +909,7 @@ def stream_ollama_response(
     images_b64: list[str] | None = None,
     temperature: float = 0.4,
     num_ctx: int | None = None,
+    base_url: str = "http://localhost:11434",
 ):
     """Generator that yields ``(type, token)`` tuples from Ollama ``/api/chat``.
 
@@ -937,7 +939,7 @@ def stream_ollama_response(
         "options": options,
     }
     with requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=True, timeout=(10, 600)
+        f"{base_url}/api/chat", json=payload, stream=True, timeout=(10, 600)
     ) as resp:
         resp.raise_for_status()
         thinking_buf: list[str] = []
@@ -1018,6 +1020,7 @@ def _run_ollama_pass(
     images_b64: list[str] | None = None,
     label: str = "",
     num_ctx: int | None = None,
+    base_url: str = "http://localhost:11434",
 ) -> tuple[str | None, str | None]:
     """Run a streaming Ollama pass, returning (result, error).
 
@@ -1028,7 +1031,7 @@ def _run_ollama_pass(
     prefix = f"{label}: " if label else ""
     try:
         result, _thinking = _stream_to_ui(
-            stream_ollama_response(model, system_prompt, user_prompt, images_b64, num_ctx=num_ctx)
+            stream_ollama_response(model, system_prompt, user_prompt, images_b64, num_ctx=num_ctx, base_url=base_url)
         )
         if not result or not result.strip():
             # Some models (e.g. Qwen3-VL) fail silently with multiple images.
@@ -1036,16 +1039,16 @@ def _run_ollama_pass(
             if images_b64 and len(images_b64) > 1:
                 logger.info("Model %s returned empty with %d images; retrying with 1 image", model, len(images_b64))
                 result, _thinking = _stream_to_ui(
-                    stream_ollama_response(model, system_prompt, user_prompt, images_b64[:1], num_ctx=num_ctx)
+                    stream_ollama_response(model, system_prompt, user_prompt, images_b64[:1], num_ctx=num_ctx, base_url=base_url)
                 )
             if not result or not result.strip():
                 logger.warning("Model %s returned an empty response", model)
                 return None, f"{prefix}Model returned an empty response."
         return result, None
     except requests.ConnectionError:
-        logger.warning("Cannot connect to Ollama at %s", OLLAMA_BASE_URL, exc_info=True)
+        logger.warning("Cannot connect to Ollama at %s", base_url, exc_info=True)
         return None, (
-            f"{prefix}Cannot connect to Ollama at `{OLLAMA_BASE_URL}`. "
+            f"{prefix}Cannot connect to Ollama at `{base_url}`. "
             "Make sure Ollama is running."
         )
     except requests.Timeout:
@@ -1262,8 +1265,6 @@ def _on_input_change():
 
 def _on_watchlist_input_change():
     """Clear watchlist results when inputs change."""
-    raw = st.session_state.get("watchlist_text", "")
-    st.session_state.watchlist_text = raw.upper()
     st.session_state.watchlist_done = False
     st.session_state.watchlist_results = {}
     st.session_state.watchlist_step = 0
@@ -1298,11 +1299,15 @@ if locked:
     )
 
 # Sidebar: Ollama host
-_ollama_host = st.sidebar.text_input(
+_ollama_host_raw = st.sidebar.text_input(
     "Ollama host", value=_OLLAMA_DEFAULT_HOST, disabled=locked,
     placeholder="e.g. localhost or 192.168.1.100",
 )
-OLLAMA_BASE_URL = f"http://{_ollama_host.strip() or _OLLAMA_DEFAULT_HOST}:11434"
+_ollama_host = _ollama_host_raw.strip() or _OLLAMA_DEFAULT_HOST
+if not _HOST_RE.match(_ollama_host):
+    st.sidebar.error("Invalid host — only letters, digits, dots, hyphens, and colons allowed.")
+    _ollama_host = _OLLAMA_DEFAULT_HOST
+OLLAMA_BASE_URL = f"http://{_ollama_host}:11434"
 
 # Sidebar: mode selection
 mode = st.sidebar.radio(
@@ -1629,6 +1634,7 @@ if is_single_mode and symbol:
                             current_model, obs_system, obs_user, images_b64,
                             label="Observation pass",
                             num_ctx=_model_ctx.get(current_model),
+                            base_url=OLLAMA_BASE_URL,
                         )
                         if obs_text is not None:
                             status.update(label="Pass 1/2: Observations complete", state="complete")
@@ -1645,6 +1651,7 @@ if is_single_mode and symbol:
                             current_model, syn_system, syn_user, syn_images,
                             label="Synthesis pass",
                             num_ctx=_model_ctx.get(current_model),
+                            base_url=OLLAMA_BASE_URL,
                         )
                         if syn_error:
                             st.session_state.ai_errors[current_model] = syn_error
@@ -1685,6 +1692,7 @@ if is_single_mode and symbol:
                         consensus_model, consensus_sys, consensus_user,
                         label="Consensus",
                         num_ctx=_model_ctx.get(consensus_model),
+                        base_url=OLLAMA_BASE_URL,
                     )
                     if con_error:
                         st.session_state.consensus_error = con_error
@@ -1811,6 +1819,7 @@ elif not is_single_mode:
                             wl_model, sys_prompt, usr_prompt, [wl_img],
                             label=current_sym,
                             num_ctx=_model_ctx.get(wl_model),
+                            base_url=OLLAMA_BASE_URL,
                         )
                         if analysis_text is not None:
                             wl_status.update(label=f"{current_sym} complete", state="complete")
