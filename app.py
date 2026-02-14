@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +39,7 @@ ANALYSIS_HISTORY_FILE = Path(__file__).parent / "analysis_history.json"
 
 CHART_BASE_HEIGHT = 500
 CHART_SUBCHART_HEIGHT = 200
+_DATA_TIMEOUT = 30  # seconds per supplementary data future
 
 
 @dataclass
@@ -580,14 +582,14 @@ def _build_prompt_data_lines(
         bb_lower = latest.get("BB_Lower")
         bb_mid = latest.get("BB_Mid")
         if pd.notna(bb_upper) and pd.notna(bb_lower):
-            close = latest["Close"]
+            close_price = latest["Close"]
             lines.append(f"- Bollinger Bands: Upper ${bb_upper:.2f}, Mid ${bb_mid:.2f}, Lower ${bb_lower:.2f}")
-            if close > bb_upper:
+            if close_price > bb_upper:
                 lines.append("  Price is ABOVE upper band (overbought / breakout)")
-            elif close < bb_lower:
+            elif close_price < bb_lower:
                 lines.append("  Price is BELOW lower band (oversold / breakdown)")
             elif bb_upper != bb_lower:
-                pct_bb = (close - bb_lower) / (bb_upper - bb_lower) * 100
+                pct_bb = (close_price - bb_lower) / (bb_upper - bb_lower) * 100
                 lines.append(f"  Price is at {pct_bb:.0f}% of band width")
             else:
                 lines.append("  Price is at mid-band (bands are flat)")
@@ -922,7 +924,7 @@ def stream_ollama_response(
     temperature: float = 0.4,
     num_ctx: int | None = None,
     base_url: str = "http://localhost:11434",
-):
+) -> Iterator[tuple[str, str]]:
     """Generator that yields ``(type, token)`` tuples from Ollama ``/api/chat``.
 
     *type* is ``"thinking"`` for thinking-mode tokens (e.g. Qwen3) or
@@ -1571,7 +1573,6 @@ else:
 # ── Main Content ─────────────────────────────────────────────────────────────
 
 if is_single_mode and symbol:
-    _DATA_TIMEOUT = 30  # seconds per future
     with st.spinner("Fetching market data..."):
         with ThreadPoolExecutor(max_workers=5) as pool:
             fut_df = pool.submit(fetch_stock_data, symbol, period)
@@ -1871,7 +1872,17 @@ elif not is_single_mode:
                 else:
                     wl_title = f"{wl_company} ({current_sym})"
                     wl_fig = build_candlestick_chart(wl_df, current_sym, ind, title=wl_title)
-                    wl_img = chart_to_base64_png(wl_fig)
+                    try:
+                        wl_img = chart_to_base64_png(wl_fig)
+                    except Exception as e:
+                        st.session_state.watchlist_results[current_sym] = {
+                            "error": f"Chart export failed for {current_sym}: {e}",
+                        }
+                        st.session_state.watchlist_step = wl_step + 1
+                        if wl_step == wl_total:
+                            st.session_state.watchlist_analyzing = False
+                            st.session_state.watchlist_done = True
+                        st.rerun()
                     sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df, ind)
                     with st.status(f"Scanning {current_sym} ({wl_step}/{wl_total})...", expanded=False) as wl_status:
                         analysis_text, wl_error = _run_ollama_pass(
