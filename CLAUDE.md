@@ -22,14 +22,15 @@ There is no test suite or linter configured.
 
 ## Architecture
 
-This is a single-file application (`app.py`, ~1850 lines). All logic lives there, organized into layers:
+This is a single-file application (`app.py`, ~1900 lines). All logic lives there, organized into layers:
 
 ### Data Layer
 - `fetch_stock_data()` pulls OHLCV data from Yahoo Finance via `yfinance`, cached 5 min.
 - `_compute_indicators()` adds technical indicator columns (SMA, EMA, Bollinger Bands, RSI, MACD, ATR, ADX) to the DataFrame in-place. ADX has a 28-bar warmup period blanked to NaN.
-- `fetch_company_name()`, `fetch_fundamentals()`, `fetch_next_earnings()`, `fetch_news_headlines()`, `fetch_market_context()` — supplementary data fetchers, all cached 5 min. These run in parallel via `ThreadPoolExecutor` on cold cache to reduce initial load time.
+- `fetch_company_name()`, `fetch_fundamentals()`, `fetch_next_earnings()`, `fetch_news_headlines()`, `fetch_market_context()` — supplementary data fetchers, all cached 5 min. These run in parallel via `ThreadPoolExecutor` on cold cache to reduce initial load time. Each future has a 30-second timeout; supplementary futures degrade gracefully to defaults on timeout (e.g. company name falls back to symbol, fundamentals/earnings/market context become `None`, news becomes `[]`).
 - `compute_support_resistance()` finds support/resistance levels from local extrema using a sliding window (`>=`/`<=` comparisons to avoid float-equality issues), then clusters nearby levels. Returned levels are sorted ascending by price for clarity in prompts.
-- Symbol input is sanitized via `_SYMBOL_RE` (strips characters outside `A-Za-z0-9.\-^=`) before being passed to yfinance — applies to both single-symbol and watchlist modes. Watchlist parsing filters out symbols that become empty after sanitization.
+- Symbol input is sanitized via `_SYMBOL_RE` (strips characters outside `A-Za-z0-9.\-^=`) before being passed to yfinance — applies to both single-symbol and watchlist modes. Watchlist parsing filters out symbols that become empty after sanitization and uppercases at parse time (not in the `on_change` callback, to avoid cursor-jump UX issues).
+- Ollama host input is validated via `_HOST_RE` (allows only `A-Za-z0-9.\-:`). Invalid input shows a sidebar error and falls back to `localhost`.
 - `_price_change_stats()` returns `(prev_close, pct_change, avg_vol, latest_vol, vol_ratio)` — callers use the returned `prev_close` rather than recomputing it.
 
 ### Chart Layer
@@ -42,9 +43,9 @@ This is a single-file application (`app.py`, ~1850 lines). All logic lives there
   1. **Observation pass** (`build_observation_messages`) — model lists factual observations only (no predictions).
   2. **Synthesis pass** (`build_analysis_messages`) — model receives its own observations and produces a structured analysis with Trend, Support/Resistance, Indicator Signals, Candlestick Patterns, Outlook, and Risk Factors sections.
 - `_build_prompt_data_lines()` assembles shared data context (price, indicator values, fundamentals, earnings, market context, news, support/resistance, recent price action) used by both prompts.
-- `stream_ollama_response()` sends messages to `/api/chat` and yields `(type, token)` tuples — `"thinking"` for thinking-mode tokens and `"content"` for regular tokens. Thinking models (e.g. Qwen3) emit tokens in a `thinking` field; these are yielded in real time and also buffered as a fallback if no content is produced. Accepts an optional `num_ctx` parameter to set the context window size (overriding Ollama's 2048 default). Malformed JSON lines from the stream are logged and skipped. Mid-stream errors from Ollama (JSON objects with an `error` field) are raised as `RuntimeError` so callers see the actual error message.
+- `stream_ollama_response()` sends messages to `/api/chat` and yields `(type, token)` tuples — `"thinking"` for thinking-mode tokens and `"content"` for regular tokens. Thinking models (e.g. Qwen3) emit tokens in a `thinking` field; these are yielded in real time and also buffered as a fallback if no content is produced. Accepts an optional `num_ctx` parameter to set the context window size (overriding Ollama's 2048 default) and a `base_url` parameter (no global dependency). Malformed JSON lines from the stream are logged and skipped. Mid-stream errors from Ollama (JSON objects with an `error` field) are raised as `RuntimeError` so callers see the actual error message.
 - `_stream_to_ui()` replaces `st.write_stream` for rendering streamed output. Uses an `st.empty()` placeholder that re-renders on each token. Starts as single-column; when the first thinking token arrives, switches to a two-column layout (`[1, 2]` ratio) with a "Thinking…" caption on the left and content on the right. Returns `(content_text, thinking_text_or_none)`.
-- `_run_ollama_pass()` wraps `_stream_to_ui(stream_ollama_response(...))` with error handling; if a model returns empty with multiple images, it automatically retries with only the primary chart image (some models like qwen3-vl fail silently with multi-image input). Connection errors, timeouts, and HTTP errors each have specific user-facing messages. Each call passes the model's `context_length` as `num_ctx` via a `_model_ctx` lookup dict built from `available_models`.
+- `_run_ollama_pass()` wraps `_stream_to_ui(stream_ollama_response(...))` with error handling; if a model returns empty with multiple images, it automatically retries with only the primary chart image (some models like qwen3-vl fail silently with multi-image input). Connection errors, timeouts, and HTTP errors each have specific user-facing messages. Each call passes the model's `context_length` as `num_ctx` via a `_model_ctx` lookup dict built from `available_models`. Takes `base_url` as a parameter and forwards it to `stream_ollama_response` (no global dependency).
 - `build_consensus_messages()` constructs a synthesis prompt with all individual analyses for the consensus model.
 - `build_watchlist_prompt()` produces a brief scan prompt for watchlist mode (single pass, no observations step).
 - **Strategic period charts**: `STRATEGIC_PERIOD_MAP` maps short periods to longer ones (e.g., "1mo" → "1y"). When available, a second chart image for the strategic period is sent alongside the primary chart to give the model longer-term context.
@@ -67,7 +68,7 @@ This is a single-file application (`app.py`, ~1850 lines). All logic lives there
 
 ## Key Design Decisions
 
-- Ollama host is configurable via a sidebar text input (defaults to `localhost`). `OLLAMA_BASE_URL` is derived as `http://<host>:11434` and set at module level during each Streamlit rerun. `fetch_ollama_models()` takes `base_url` as a parameter so the `@st.cache_data` cache invalidates when the host changes.
+- Ollama host is configurable via a sidebar text input (defaults to `localhost`), validated by `_HOST_RE`. `OLLAMA_BASE_URL` is derived as `http://<host>:11434` in the UI layer and passed explicitly as a parameter to `_run_ollama_pass` / `stream_ollama_response` — these functions do not read the global, making the app safe for concurrent Streamlit sessions with different hosts. `fetch_ollama_models()` takes `base_url` as a parameter so the `@st.cache_data` cache invalidates when the host changes.
 - The `Indicators` dataclass centralizes which indicators are active and provides `active_labels()` for prompt construction.
 - Chart height is dynamic: base 500px + 200px per sub-chart (RSI/MACD/ATR/ADX). Only sub-charts with valid data are shown.
 - The app uses `st.rerun()` after each pipeline step to manage Streamlit's execution model. Analysis runs one model per rerun via `analysis_step`, with the consensus summarizer as the final step.
@@ -76,6 +77,6 @@ This is a single-file application (`app.py`, ~1850 lines). All logic lives there
 
 ## Dependencies
 
-Python 3.13+. Key packages: `streamlit`, `plotly`, `yfinance`, `requests`, `kaleido` (for Plotly image export), `lxml`. NumPy and Pandas are transitive deps used directly.
+Python 3.13+. Key packages: `streamlit`, `plotly`, `yfinance`, `requests`, `kaleido` (for Plotly image export), `lxml`. NumPy and Pandas are transitive deps used directly. All dependencies are pinned with `>=current,<next_major` bounds in `requirements.txt`.
 
 - `logging.basicConfig()` is called at module level so that `logger.warning()` / `logger.info()` calls throughout the app produce visible output.
