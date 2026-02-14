@@ -1304,20 +1304,6 @@ if locked:
         use_container_width=True,
     )
 
-# Sidebar: Ollama host
-_ollama_host_raw = st.sidebar.text_input(
-    "Ollama host", value=_OLLAMA_DEFAULT_HOST, disabled=locked,
-    placeholder="e.g. localhost or 192.168.1.100:11434",
-)
-_ollama_host = _ollama_host_raw.strip() or _OLLAMA_DEFAULT_HOST
-if not _HOST_RE.match(_ollama_host):
-    st.sidebar.error("Invalid host — only letters, digits, dots, hyphens, and colons allowed.")
-    _ollama_host = _OLLAMA_DEFAULT_HOST
-if ":" in _ollama_host:
-    OLLAMA_BASE_URL = f"http://{_ollama_host}"
-else:
-    OLLAMA_BASE_URL = f"http://{_ollama_host}:11434"
-
 # Sidebar: mode selection
 mode = st.sidebar.radio(
     "Mode",
@@ -1387,6 +1373,18 @@ send_images_both_passes = st.sidebar.checkbox(
 
 # Sidebar: model selection + action button
 st.sidebar.divider()
+_ollama_host_raw = st.sidebar.text_input(
+    "Ollama host", value=_OLLAMA_DEFAULT_HOST, disabled=locked,
+    placeholder="e.g. localhost or 192.168.1.100:11434",
+)
+_ollama_host = _ollama_host_raw.strip() or _OLLAMA_DEFAULT_HOST
+if not _HOST_RE.match(_ollama_host):
+    st.sidebar.error("Invalid host — only letters, digits, dots, hyphens, and colons allowed.")
+    _ollama_host = _OLLAMA_DEFAULT_HOST
+if ":" in _ollama_host:
+    OLLAMA_BASE_URL = f"http://{_ollama_host}"
+else:
+    OLLAMA_BASE_URL = f"http://{_ollama_host}:11434"
 available_models = fetch_ollama_models(OLLAMA_BASE_URL)
 vision_models = [m for m in available_models if "vision" in m.get("capabilities", [])]
 _model_ctx: dict[str, int | None] = {m["name"]: m.get("context_length") for m in available_models}
