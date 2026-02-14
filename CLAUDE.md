@@ -22,7 +22,7 @@ There is no test suite or linter configured.
 
 ## Architecture
 
-This is a single-file application (`app.py`, ~1750 lines). All logic lives there, organized into layers:
+This is a single-file application (`app.py`, ~1850 lines). All logic lives there, organized into layers:
 
 ### Data Layer
 - `fetch_stock_data()` pulls OHLCV data from Yahoo Finance via `yfinance`, cached 5 min.
@@ -37,12 +37,14 @@ This is a single-file application (`app.py`, ~1750 lines). All logic lives there
 - `chart_to_base64_png(fig)` exports the figure to a base64-encoded PNG using Kaleido (1200px width, 2x scale). It reads height directly from `fig.layout.height` to stay in sync with `build_candlestick_chart()`.
 
 ### AI Layer
-- `fetch_ollama_models()` queries the local Ollama API (`/api/tags` + `/api/show` in parallel via ThreadPoolExecutor) to discover all models and their capabilities, cached 30 sec.
+- `fetch_ollama_models()` queries the local Ollama API (`/api/tags` + `/api/show` in parallel via ThreadPoolExecutor) to discover all models, their capabilities, and context length, cached 30 sec. Context length is extracted from `model_info[<arch>.context_length]` in the `/api/show` response.
 - **Two-pass analysis**: Single-symbol analysis runs two Ollama calls per vision model:
   1. **Observation pass** (`build_observation_messages`) — model lists factual observations only (no predictions).
   2. **Synthesis pass** (`build_analysis_messages`) — model receives its own observations and produces a structured analysis with Trend, Support/Resistance, Indicator Signals, Candlestick Patterns, Outlook, and Risk Factors sections.
 - `_build_prompt_data_lines()` assembles shared data context (price, indicator values, fundamentals, earnings, market context, news, support/resistance, recent price action) used by both prompts.
-- `stream_ollama_response()` sends messages to `/api/chat` and yields streamed text tokens. It also handles "thinking" models (e.g. Qwen3) that emit tokens in a `thinking` field instead of `content`, falling back to thinking output if no content is produced. Malformed JSON lines from the stream are logged and skipped. Mid-stream errors from Ollama (JSON objects with an `error` field) are raised as `RuntimeError` so callers see the actual error message. `_run_ollama_pass()` wraps this with Streamlit's `st.write_stream` and error handling; if a model returns empty with multiple images, it automatically retries with only the primary chart image (some models like qwen3-vl fail silently with multi-image input). Connection errors, timeouts, and HTTP errors each have specific user-facing messages.
+- `stream_ollama_response()` sends messages to `/api/chat` and yields `(type, token)` tuples — `"thinking"` for thinking-mode tokens and `"content"` for regular tokens. Thinking models (e.g. Qwen3) emit tokens in a `thinking` field; these are yielded in real time and also buffered as a fallback if no content is produced. Accepts an optional `num_ctx` parameter to set the context window size (overriding Ollama's 2048 default). Malformed JSON lines from the stream are logged and skipped. Mid-stream errors from Ollama (JSON objects with an `error` field) are raised as `RuntimeError` so callers see the actual error message.
+- `_stream_to_ui()` replaces `st.write_stream` for rendering streamed output. Uses an `st.empty()` placeholder that re-renders on each token. Starts as single-column; when the first thinking token arrives, switches to a two-column layout (`[1, 2]` ratio) with a "Thinking…" caption on the left and content on the right. Returns `(content_text, thinking_text_or_none)`.
+- `_run_ollama_pass()` wraps `_stream_to_ui(stream_ollama_response(...))` with error handling; if a model returns empty with multiple images, it automatically retries with only the primary chart image (some models like qwen3-vl fail silently with multi-image input). Connection errors, timeouts, and HTTP errors each have specific user-facing messages. Each call passes the model's `context_length` as `num_ctx` via a `_model_ctx` lookup dict built from `available_models`.
 - `build_consensus_messages()` constructs a synthesis prompt with all individual analyses for the consensus model.
 - `build_watchlist_prompt()` produces a brief scan prompt for watchlist mode (single pass, no observations step).
 - **Strategic period charts**: `STRATEGIC_PERIOD_MAP` maps short periods to longer ones (e.g., "1mo" → "1y"). When available, a second chart image for the strategic period is sent alongside the primary chart to give the model longer-term context.
