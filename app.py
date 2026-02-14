@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import os
 import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -927,7 +928,7 @@ def stream_ollama_response(
     if images_b64:
         user_message["images"] = images_b64
     options: dict = {"temperature": temperature}
-    if num_ctx is not None:
+    if num_ctx is not None and isinstance(num_ctx, int):
         options["num_ctx"] = num_ctx
     payload = {
         "model": model,
@@ -1194,10 +1195,15 @@ def save_analysis(
         dir=ANALYSIS_HISTORY_FILE.parent, suffix=".tmp"
     )
     try:
-        with open(fd, "w") as f:
+        with open(fd, "w", closefd=True) as f:
             json.dump(history, f, indent=2)
         Path(tmp_path).replace(ANALYSIS_HISTORY_FILE)
-    except Exception:
+    except BaseException:
+        # Ensure fd is closed even if open() itself fails (fd not yet owned by file object)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         Path(tmp_path).unlink(missing_ok=True)
         raise
 
@@ -1301,13 +1307,16 @@ if locked:
 # Sidebar: Ollama host
 _ollama_host_raw = st.sidebar.text_input(
     "Ollama host", value=_OLLAMA_DEFAULT_HOST, disabled=locked,
-    placeholder="e.g. localhost or 192.168.1.100",
+    placeholder="e.g. localhost or 192.168.1.100:11434",
 )
 _ollama_host = _ollama_host_raw.strip() or _OLLAMA_DEFAULT_HOST
 if not _HOST_RE.match(_ollama_host):
     st.sidebar.error("Invalid host — only letters, digits, dots, hyphens, and colons allowed.")
     _ollama_host = _OLLAMA_DEFAULT_HOST
-OLLAMA_BASE_URL = f"http://{_ollama_host}:11434"
+if ":" in _ollama_host:
+    OLLAMA_BASE_URL = f"http://{_ollama_host}"
+else:
+    OLLAMA_BASE_URL = f"http://{_ollama_host}:11434"
 
 # Sidebar: mode selection
 mode = st.sidebar.radio(
@@ -1800,8 +1809,12 @@ if is_single_mode and symbol:
                 with st.expander("Analysis History", expanded=False):
                     for entry in reversed(history):
                         ts = entry.get("timestamp", "")
+                        try:
+                            ts_display = datetime.fromisoformat(ts).strftime("%b %d, %Y %I:%M %p")
+                        except (ValueError, TypeError):
+                            ts_display = ts[:16]
                         models_str = ", ".join(entry.get("models", []))
-                        st.markdown(f"**{ts[:16]}** — {entry.get('period', '')} — {models_str}")
+                        st.markdown(f"**{ts_display}** — {entry.get('period', '')} — {models_str}")
                         for m_name, m_analysis in entry.get("analyses", {}).items():
                             st.markdown(f"*{m_name}:*")
                             st.markdown(_escape_markdown(m_analysis))
