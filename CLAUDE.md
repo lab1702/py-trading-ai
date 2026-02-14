@@ -67,7 +67,7 @@ This is a single-file application (`app.py`, ~1850 lines). All logic lives there
 
 ## Key Design Decisions
 
-- Ollama base URL is hardcoded as `OLLAMA_BASE_URL = "http://localhost:11434"` at the top of the file.
+- Ollama host is configurable via a sidebar text input (defaults to `localhost`). `OLLAMA_BASE_URL` is derived as `http://<host>:11434` and set at module level during each Streamlit rerun. `fetch_ollama_models()` takes `base_url` as a parameter so the `@st.cache_data` cache invalidates when the host changes.
 - The `Indicators` dataclass centralizes which indicators are active and provides `active_labels()` for prompt construction.
 - Chart height is dynamic: base 500px + 200px per sub-chart (RSI/MACD/ATR/ADX). Only sub-charts with valid data are shown.
 - The app uses `st.rerun()` after each pipeline step to manage Streamlit's execution model. Analysis runs one model per rerun via `analysis_step`, with the consensus summarizer as the final step.
