@@ -19,13 +19,13 @@ A web-based stock technical analysis tool that combines interactive candlestick 
 - **Multi-model consensus** — select multiple vision models for independent analyses, then a consensus model synthesizes them into a report with agreement/disagreement points and an overall outlook
 - **Watchlist mode** — scan multiple symbols quickly with a single vision model for at-a-glance trend, confidence, key signals, and outlook
 - **Dynamic model selector** — automatically detects all Ollama models and their capabilities; vision models appear in a multiselect, all models are available as the consensus summarizer
-- **Analysis history** — analyses are saved locally and viewable in the UI, with Markdown export/download
+- **Analysis history** — analyses are saved locally and viewable in the UI with human-readable timestamps, with Markdown export/download
 - **Chart export** to PNG (1200px width, dynamic height, 2x scale)
 - **Thinking model support** — models like Qwen3 that use a thinking mode display their reasoning in a side-by-side column layout during streaming
-- **Configurable Ollama host** — point the app at a remote Ollama instance via the sidebar (defaults to localhost)
-- **Full context window** — automatically detects each model's max context length and uses it, instead of Ollama's 2048-token default
+- **Configurable Ollama host** — point the app at a remote Ollama instance via the sidebar (defaults to `localhost:11434`). Supports `host:port` syntax for non-standard ports. Input is validated to prevent malformed URLs
+- **Full context window** — automatically detects each model's max context length and uses it, instead of Ollama's 2048-token default. Context length is validated as an integer before use
 - **Streaming AI responses** for a responsive experience
-- **5-minute data caching** to reduce redundant API calls
+- **5-minute data caching** to reduce redundant API calls, with 30-second timeouts on data fetches and graceful degradation for supplementary data
 
 ## Prerequisites
 
@@ -83,11 +83,11 @@ The app opens at `http://localhost:8501`. Use the sidebar to switch between two 
 | Charting | Plotly |
 | Market data | yfinance |
 | Data processing | Pandas, NumPy |
-| Image export | Kaleido (0.2.x — self-contained, no system browser needed) |
+| Image export | Kaleido |
 | AI analysis | Ollama (vision models for chart analysis, any model for consensus) |
 
 ## Troubleshooting
 
 - **"No vision-capable models found"** — Make sure Ollama is running (`ollama serve`) and you've pulled at least one vision model (`ollama pull gemma3`). If using a remote host, check the Ollama host setting in the sidebar.
 - **Empty or no response from a model** — Some models struggle with multi-image input. The app retries automatically with a single image, but if issues persist, try a different model.
-- **Chart export fails** — Kaleido is pinned to 0.2.x which bundles its own Chromium. If you see export errors, ensure `kaleido` installed correctly (`pip install "kaleido>=0.2.1,<1"`).
+- **Chart export fails** — Ensure `kaleido` installed correctly (`pip install "kaleido>=1.2,<2"`).
