@@ -1533,6 +1533,7 @@ else:
 # ── Main Content ─────────────────────────────────────────────────────────────
 
 if is_single_mode and symbol:
+    _DATA_TIMEOUT = 30  # seconds per future
     with st.spinner("Fetching market data..."):
         with ThreadPoolExecutor(max_workers=6) as pool:
             fut_df = pool.submit(fetch_stock_data, symbol, period)
@@ -1541,12 +1542,31 @@ if is_single_mode and symbol:
             fut_earn = pool.submit(fetch_next_earnings, symbol)
             fut_mkt = pool.submit(fetch_market_context, period)
             fut_news = pool.submit(fetch_news_headlines, symbol)
-        df = fut_df.result()
-        company_name = fut_name.result()
-        fundamentals = fut_fund.result()
-        earnings_info = fut_earn.result()
-        market_ctx = fut_mkt.result()
-        news_headlines = fut_news.result()
+        try:
+            df = fut_df.result(timeout=_DATA_TIMEOUT)
+        except TimeoutError:
+            df = None
+        # Supplementary data degrades gracefully on timeout
+        try:
+            company_name = fut_name.result(timeout=_DATA_TIMEOUT)
+        except TimeoutError:
+            company_name = symbol.upper()
+        try:
+            fundamentals = fut_fund.result(timeout=_DATA_TIMEOUT)
+        except TimeoutError:
+            fundamentals = None
+        try:
+            earnings_info = fut_earn.result(timeout=_DATA_TIMEOUT)
+        except TimeoutError:
+            earnings_info = None
+        try:
+            market_ctx = fut_mkt.result(timeout=_DATA_TIMEOUT)
+        except TimeoutError:
+            market_ctx = None
+        try:
+            news_headlines = fut_news.result(timeout=_DATA_TIMEOUT)
+        except TimeoutError:
+            news_headlines = []
 
     if df is None or df.empty:
         st.error(f"No data found for **{symbol}**. Check the symbol and try again.")
