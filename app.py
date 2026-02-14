@@ -850,11 +850,17 @@ def fetch_ollama_models() -> list[dict]:
                 disk_size = f"{disk_bytes / (1 << 30):.1f} GB"
             else:
                 disk_size = f"{disk_bytes / (1 << 20):.0f} MB"
+            # Extract context length from model_info: <arch>.context_length
+            model_info = show.get("model_info", {})
+            arch = model_info.get("general.architecture", "")
+            context_length = model_info.get(f"{arch}.context_length") if arch else None
+
             return {
                 "name": m["name"],
                 "parameter_size": param_size,
                 "disk_size": disk_size,
                 "capabilities": capabilities,
+                "context_length": context_length,
             }
         except Exception:
             logger.warning("Failed to fetch info for model %s", m["name"], exc_info=True)
@@ -901,17 +907,26 @@ def stream_ollama_response(
     user_prompt: str,
     images_b64: list[str] | None = None,
     temperature: float = 0.4,
+    num_ctx: int | None = None,
 ):
-    """Generator that yields text chunks from the Ollama /api/chat endpoint.
+    """Generator that yields ``(type, token)`` tuples from Ollama ``/api/chat``.
 
-    Some models (e.g. Qwen3) use a "thinking" mode where initial tokens
-    arrive in a ``thinking`` field instead of ``content``.  We buffer those
-    thinking tokens and only emit them as a fallback if the model finishes
-    without producing any regular content.
+    *type* is ``"thinking"`` for thinking-mode tokens (e.g. Qwen3) or
+    ``"content"`` for regular content tokens.
+
+    If *num_ctx* is provided it is passed as the context window size in the
+    Ollama options, overriding the default (2048).
+
+    If the model finishes without producing any content tokens but did emit
+    thinking tokens, the accumulated thinking text is yielded as
+    ``("content", ...)`` so callers always receive usable output.
     """
     user_message: dict = {"role": "user", "content": user_prompt}
     if images_b64:
         user_message["images"] = images_b64
+    options: dict = {"temperature": temperature}
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
     payload = {
         "model": model,
         "messages": [
@@ -919,7 +934,7 @@ def stream_ollama_response(
             user_message,
         ],
         "stream": True,
-        "options": {"temperature": temperature},
+        "options": options,
     }
     with requests.post(
         f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=True, timeout=(10, 600)
@@ -940,18 +955,60 @@ def stream_ollama_response(
                 token = msg.get("content", "")
                 if token:
                     has_content = True
-                    yield _escape_markdown(token)
+                    yield ("content", _escape_markdown(token))
                 else:
                     thinking_token = msg.get("thinking", "")
                     if thinking_token:
                         thinking_buf.append(thinking_token)
+                        yield ("thinking", _escape_markdown(thinking_token))
                 if data.get("done", False):
                     if not has_content and thinking_buf:
                         logger.info("Model %s produced only thinking output; using as fallback", model)
-                        yield _escape_markdown("".join(thinking_buf))
+                        yield ("content", _escape_markdown("".join(thinking_buf)))
                     elif not has_content and not thinking_buf:
                         logger.warning("Model %s returned done with no content or thinking tokens", model)
                     return
+
+
+def _stream_to_ui(
+    token_stream,
+) -> tuple[str, str | None]:
+    """Render a ``stream_ollama_response`` stream into Streamlit, returning text.
+
+    Displays content tokens as markdown.  When thinking tokens are detected,
+    the layout switches to two columns (thinking on the left, content on the
+    right) so the user can follow the model's reasoning in real time.
+
+    Returns ``(content_text, thinking_text_or_none)``.
+    """
+    placeholder = st.empty()
+    content_parts: list[str] = []
+    thinking_parts: list[str] = []
+    has_thinking = False
+
+    for kind, token in token_stream:
+        if kind == "thinking":
+            if not has_thinking:
+                has_thinking = True
+            thinking_parts.append(token)
+        else:
+            content_parts.append(token)
+
+        # Re-render the placeholder on every token.
+        with placeholder.container():
+            if has_thinking:
+                col_think, col_content = st.columns([1, 2])
+                with col_think:
+                    st.caption("Thinking\u2026")
+                    st.markdown("".join(thinking_parts))
+                with col_content:
+                    st.markdown("".join(content_parts))
+            else:
+                st.markdown("".join(content_parts))
+
+    content_text = "".join(content_parts)
+    thinking_text = "".join(thinking_parts) if thinking_parts else None
+    return content_text, thinking_text
 
 
 def _run_ollama_pass(
@@ -960,6 +1017,7 @@ def _run_ollama_pass(
     user_prompt: str,
     images_b64: list[str] | None = None,
     label: str = "",
+    num_ctx: int | None = None,
 ) -> tuple[str | None, str | None]:
     """Run a streaming Ollama pass, returning (result, error).
 
@@ -969,16 +1027,16 @@ def _run_ollama_pass(
     """
     prefix = f"{label}: " if label else ""
     try:
-        result = st.write_stream(
-            stream_ollama_response(model, system_prompt, user_prompt, images_b64)
+        result, _thinking = _stream_to_ui(
+            stream_ollama_response(model, system_prompt, user_prompt, images_b64, num_ctx=num_ctx)
         )
         if not result or not result.strip():
             # Some models (e.g. Qwen3-VL) fail silently with multiple images.
             # Retry with only the first image before giving up.
             if images_b64 and len(images_b64) > 1:
                 logger.info("Model %s returned empty with %d images; retrying with 1 image", model, len(images_b64))
-                result = st.write_stream(
-                    stream_ollama_response(model, system_prompt, user_prompt, images_b64[:1])
+                result, _thinking = _stream_to_ui(
+                    stream_ollama_response(model, system_prompt, user_prompt, images_b64[:1], num_ctx=num_ctx)
                 )
             if not result or not result.strip():
                 logger.warning("Model %s returned an empty response", model)
@@ -1310,6 +1368,7 @@ send_images_both_passes = st.sidebar.checkbox(
 st.sidebar.divider()
 available_models = fetch_ollama_models()
 vision_models = [m for m in available_models if "vision" in m.get("capabilities", [])]
+_model_ctx: dict[str, int | None] = {m["name"]: m.get("context_length") for m in available_models}
 
 selected_vision_names: list[str] = []
 selected_consensus_model: str | None = None
@@ -1562,6 +1621,7 @@ if is_single_mode and symbol:
                         obs_text, obs_error = _run_ollama_pass(
                             current_model, obs_system, obs_user, images_b64,
                             label="Observation pass",
+                            num_ctx=_model_ctx.get(current_model),
                         )
                         if obs_text is not None:
                             status.update(label="Pass 1/2: Observations complete", state="complete")
@@ -1577,6 +1637,7 @@ if is_single_mode and symbol:
                         result, syn_error = _run_ollama_pass(
                             current_model, syn_system, syn_user, syn_images,
                             label="Synthesis pass",
+                            num_ctx=_model_ctx.get(current_model),
                         )
                         if syn_error:
                             st.session_state.ai_errors[current_model] = syn_error
@@ -1616,6 +1677,7 @@ if is_single_mode and symbol:
                     result, con_error = _run_ollama_pass(
                         consensus_model, consensus_sys, consensus_user,
                         label="Consensus",
+                        num_ctx=_model_ctx.get(consensus_model),
                     )
                     if con_error:
                         st.session_state.consensus_error = con_error
@@ -1741,6 +1803,7 @@ elif not is_single_mode:
                         analysis_text, wl_error = _run_ollama_pass(
                             wl_model, sys_prompt, usr_prompt, [wl_img],
                             label=current_sym,
+                            num_ctx=_model_ctx.get(wl_model),
                         )
                         if analysis_text is not None:
                             wl_status.update(label=f"{current_sym} complete", state="complete")
