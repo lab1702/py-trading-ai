@@ -643,8 +643,7 @@ def _build_prompt_data_lines(
             lines.append("- ADX (14): N/A (insufficient data)")
 
     # --- Fundamental context ---
-    has_fundamentals = fundamentals and any(v is not None for v in fundamentals.values())
-    if has_fundamentals:
+    if fundamentals:
         lines.append("\nFundamental context:")
         if fundamentals.get("sector"):
             lines.append(f"- Sector: {fundamentals['sector']}, Industry: {fundamentals.get('industry', 'N/A')}")
