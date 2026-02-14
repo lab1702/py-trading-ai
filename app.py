@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -79,34 +80,44 @@ def fetch_stock_data(symbol: str, period: str) -> pd.DataFrame | None:
 
 
 @st.cache_data(show_spinner=False, ttl=300)
+def _fetch_ticker_info(symbol: str) -> dict:
+    """Fetch ticker info dict from Yahoo Finance (single network call).
+
+    Both ``fetch_company_name`` and ``fetch_fundamentals`` read from this
+    shared cache so that ``yf.Ticker(symbol).info`` is only fetched once
+    per symbol per TTL window.
+    """
+    try:
+        return yf.Ticker(symbol).info or {}
+    except Exception:
+        logger.warning("Failed to fetch ticker info for %s", symbol, exc_info=True)
+        return {}
+
+
 def fetch_company_name(symbol: str) -> str:
     """Look up the long company name for a ticker symbol."""
-    try:
-        info = yf.Ticker(symbol).info
-        return info.get("longName") or info.get("shortName") or symbol.upper()
-    except Exception:
-        logger.warning("Failed to fetch company name for %s", symbol, exc_info=True)
-        return symbol.upper()
+    info = _fetch_ticker_info(symbol)
+    return info.get("longName") or info.get("shortName") or symbol.upper()
 
 
-@st.cache_data(show_spinner=False, ttl=300)
 def fetch_fundamentals(symbol: str) -> dict | None:
     """Fetch fundamental data for a ticker symbol."""
-    try:
-        info = yf.Ticker(symbol).info
-        return {
-            "trailingPE": info.get("trailingPE"),
-            "forwardPE": info.get("forwardPE"),
-            "marketCap": info.get("marketCap"),
-            "dividendYield": info.get("dividendYield"),
-            "sector": info.get("sector"),
-            "industry": info.get("industry"),
-            "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
-            "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
-        }
-    except Exception:
-        logger.warning("Failed to fetch fundamentals for %s", symbol, exc_info=True)
+    info = _fetch_ticker_info(symbol)
+    if not info:
         return None
+    result = {
+        "trailingPE": info.get("trailingPE"),
+        "forwardPE": info.get("forwardPE"),
+        "marketCap": info.get("marketCap"),
+        "dividendYield": info.get("dividendYield"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+        "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+    }
+    if any(v is not None for v in result.values()):
+        return result
+    return None
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -973,6 +984,9 @@ def stream_ollama_response(
                     return
 
 
+_STREAM_RENDER_INTERVAL = 0.05  # seconds between UI re-renders during streaming
+
+
 def _stream_to_ui(
     token_stream,
 ) -> tuple[str, str | None]:
@@ -982,22 +996,19 @@ def _stream_to_ui(
     the layout switches to two columns (thinking on the left, content on the
     right) so the user can follow the model's reasoning in real time.
 
+    Re-renders are throttled to every ~50 ms to avoid O(n²) rendering overhead
+    when the model streams many small tokens quickly.
+
     Returns ``(content_text, thinking_text_or_none)``.
     """
     placeholder = st.empty()
     content_parts: list[str] = []
     thinking_parts: list[str] = []
     has_thinking = False
+    last_render = 0.0
+    dirty = False
 
-    for kind, token in token_stream:
-        if kind == "thinking":
-            if not has_thinking:
-                has_thinking = True
-            thinking_parts.append(token)
-        else:
-            content_parts.append(token)
-
-        # Re-render the placeholder on every token.
+    def _render() -> None:
         with placeholder.container():
             if has_thinking:
                 col_think, col_content = st.columns([1, 2])
@@ -1008,6 +1019,26 @@ def _stream_to_ui(
                     st.markdown("".join(content_parts))
             else:
                 st.markdown("".join(content_parts))
+
+    for kind, token in token_stream:
+        if kind == "thinking":
+            if not has_thinking:
+                has_thinking = True
+            thinking_parts.append(token)
+        else:
+            content_parts.append(token)
+
+        now = time.monotonic()
+        if now - last_render >= _STREAM_RENDER_INTERVAL:
+            _render()
+            last_render = now
+            dirty = False
+        else:
+            dirty = True
+
+    # Always render the final state so nothing is lost.
+    if dirty or last_render == 0.0:
+        _render()
 
     content_text = "".join(content_parts)
     thinking_text = "".join(thinking_parts) if thinking_parts else None
@@ -1542,10 +1573,9 @@ else:
 if is_single_mode and symbol:
     _DATA_TIMEOUT = 30  # seconds per future
     with st.spinner("Fetching market data..."):
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=5) as pool:
             fut_df = pool.submit(fetch_stock_data, symbol, period)
-            fut_name = pool.submit(fetch_company_name, symbol)
-            fut_fund = pool.submit(fetch_fundamentals, symbol)
+            fut_info = pool.submit(_fetch_ticker_info, symbol)
             fut_earn = pool.submit(fetch_next_earnings, symbol)
             fut_mkt = pool.submit(fetch_market_context, period)
             fut_news = pool.submit(fetch_news_headlines, symbol)
@@ -1555,13 +1585,11 @@ if is_single_mode and symbol:
             df = None
         # Supplementary data degrades gracefully on timeout
         try:
-            company_name = fut_name.result(timeout=_DATA_TIMEOUT)
+            fut_info.result(timeout=_DATA_TIMEOUT)  # warm the cache
         except TimeoutError:
-            company_name = symbol.upper()
-        try:
-            fundamentals = fut_fund.result(timeout=_DATA_TIMEOUT)
-        except TimeoutError:
-            fundamentals = None
+            pass
+        company_name = fetch_company_name(symbol)
+        fundamentals = fetch_fundamentals(symbol)
         try:
             earnings_info = fut_earn.result(timeout=_DATA_TIMEOUT)
         except TimeoutError:
