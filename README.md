@@ -21,13 +21,16 @@ A web-based stock technical analysis tool that combines interactive candlestick 
 - **Dynamic model selector** — automatically detects all Ollama models and their capabilities; vision models appear in a multiselect, all models are available as the consensus summarizer
 - **Analysis history** — analyses are saved locally and viewable in the UI, with Markdown export/download
 - **Chart export** to PNG (1200px width, dynamic height, 2x scale)
+- **Thinking model support** — models like Qwen3 that use a thinking mode display their reasoning in a side-by-side column layout during streaming
+- **Configurable Ollama host** — point the app at a remote Ollama instance via the sidebar (defaults to localhost)
+- **Full context window** — automatically detects each model's max context length and uses it, instead of Ollama's 2048-token default
 - **Streaming AI responses** for a responsive experience
 - **5-minute data caching** to reduce redundant API calls
 
 ## Prerequisites
 
 - Python 3.13+
-- [Ollama](https://ollama.com/) running locally with at least one vision-capable model pulled. We recommend trying `gemma3` first:
+- [Ollama](https://ollama.com/) running locally (or on a reachable host) with at least one vision-capable model pulled. We recommend trying `gemma3` first:
   ```bash
   ollama pull gemma3
   ```
@@ -46,7 +49,7 @@ pip install -r requirements.txt
 
 ## Usage
 
-Make sure Ollama is running, then start the app:
+Make sure Ollama is running (locally or on a remote host), then start the app:
 
 ```bash
 streamlit run app.py
@@ -85,6 +88,6 @@ The app opens at `http://localhost:8501`. Use the sidebar to switch between two 
 
 ## Troubleshooting
 
-- **"No vision-capable models found"** — Make sure Ollama is running (`ollama serve`) and you've pulled at least one vision model (`ollama pull gemma3`).
+- **"No vision-capable models found"** — Make sure Ollama is running (`ollama serve`) and you've pulled at least one vision model (`ollama pull gemma3`). If using a remote host, check the Ollama host setting in the sidebar.
 - **Empty or no response from a model** — Some models struggle with multi-image input. The app retries automatically with a single image, but if issues persist, try a different model.
 - **Chart export fails** — Kaleido is pinned to 0.2.x which bundles its own Chromium. If you see export errors, ensure `kaleido` installed correctly (`pip install "kaleido>=0.2.1,<1"`).
