@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 _SYMBOL_RE = re.compile(r"[^A-Za-z0-9.\-^=]")
 
-OLLAMA_BASE_URL = "http://localhost:11434"
+_OLLAMA_DEFAULT_HOST = "localhost"
 
 STRATEGIC_PERIOD_MAP = {
     "1mo": "1y",
@@ -824,10 +824,10 @@ def build_analysis_messages(
 
 
 @st.cache_data(show_spinner=False, ttl=30)
-def fetch_ollama_models() -> list[dict]:
+def fetch_ollama_models(base_url: str) -> list[dict]:
     """Fetch all models with parameter size and capabilities from Ollama."""
     try:
-        resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        resp = requests.get(f"{base_url}/api/tags", timeout=5)
         resp.raise_for_status()
         models = resp.json().get("models", [])
     except Exception:
@@ -837,7 +837,7 @@ def fetch_ollama_models() -> list[dict]:
     def _fetch_model_info(m: dict) -> dict | None:
         try:
             resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/show",
+                f"{base_url}/api/show",
                 json={"model": m["name"]},
                 timeout=5,
             )
@@ -1297,6 +1297,13 @@ if locked:
         use_container_width=True,
     )
 
+# Sidebar: Ollama host
+_ollama_host = st.sidebar.text_input(
+    "Ollama host", value=_OLLAMA_DEFAULT_HOST, disabled=locked,
+    placeholder="e.g. localhost or 192.168.1.100",
+)
+OLLAMA_BASE_URL = f"http://{_ollama_host.strip() or _OLLAMA_DEFAULT_HOST}:11434"
+
 # Sidebar: mode selection
 mode = st.sidebar.radio(
     "Mode",
@@ -1366,7 +1373,7 @@ send_images_both_passes = st.sidebar.checkbox(
 
 # Sidebar: model selection + action button
 st.sidebar.divider()
-available_models = fetch_ollama_models()
+available_models = fetch_ollama_models(OLLAMA_BASE_URL)
 vision_models = [m for m in available_models if "vision" in m.get("capabilities", [])]
 _model_ctx: dict[str, int | None] = {m["name"]: m.get("context_length") for m in available_models}
 
