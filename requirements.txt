@@ -1,6 +1,6 @@
-streamlit>=1.54,<2
-plotly>=6.5,<7
-yfinance>=1.1,<2
-requests>=2.32,<3
-kaleido>=1.2,<2
-lxml>=6.0,<7
+streamlit
+plotly
+yfinance
+requests
+kaleido<0.3
+lxml
