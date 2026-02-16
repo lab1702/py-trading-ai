@@ -1475,7 +1475,7 @@ if is_single_mode:
             "Stop after current step",
             on_click=_stop_analysis,
             type="secondary",
-            use_container_width=True,
+            width="stretch",
         )
 
 else:
@@ -1533,7 +1533,7 @@ else:
             "Stop after current step",
             on_click=_stop_analysis,
             type="secondary",
-            use_container_width=True,
+            width="stretch",
             key="stop_watchlist",
         )
 
@@ -1578,7 +1578,7 @@ if is_single_mode and symbol:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
         chart_png = build_candlestick_chart(df, symbol, ind, title=chart_title)
-        st.image(chart_png, use_container_width=True)
+        st.image(chart_png, width="stretch")
 
         # Determine strategic period
         strategic_period = STRATEGIC_PERIOD_MAP.get(period)
