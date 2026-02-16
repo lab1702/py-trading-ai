@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 logging.basicConfig()
@@ -927,6 +928,9 @@ def stream_ollama_response(
 
 
 _STREAM_RENDER_INTERVAL = 0.05  # seconds between UI re-renders during streaming
+_SCROLL_SCRIPT = (
+    '<script>frameElement.scrollIntoView({block:"end",behavior:"smooth"})</script>'
+)
 
 
 def _stream_to_ui(
@@ -950,17 +954,23 @@ def _stream_to_ui(
     last_render = 0.0
     dirty = False
 
-    def _render() -> None:
+    def _render(scroll: bool = True) -> None:
         with placeholder.container():
             if has_thinking:
                 col_think, col_content = st.columns([1, 2])
                 with col_think:
                     st.caption("Thinking\u2026")
                     st.markdown("".join(thinking_parts))
+                    if scroll and not content_parts:
+                        components.html(_SCROLL_SCRIPT, height=0)
                 with col_content:
                     st.markdown("".join(content_parts))
+                    if scroll and content_parts:
+                        components.html(_SCROLL_SCRIPT, height=0)
             else:
                 st.markdown("".join(content_parts))
+                if scroll:
+                    components.html(_SCROLL_SCRIPT, height=0)
 
     for kind, token in token_stream:
         if kind == "thinking":
@@ -978,9 +988,10 @@ def _stream_to_ui(
         else:
             dirty = True
 
-    # Always render the final state so nothing is lost.
+    # Always render the final state so nothing is lost.  No scroll — streaming
+    # is complete, so the page should stop auto-scrolling.
     if dirty or last_render == 0.0:
-        _render()
+        _render(scroll=False)
 
     content_text = "".join(content_parts)
     thinking_text = "".join(thinking_parts) if thinking_parts else None
