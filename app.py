@@ -106,8 +106,12 @@ _ALL_INDICATOR_LABELS = [
 
 @st.cache_data(show_spinner=False, ttl=300)
 def fetch_stock_data(symbol: str, period: str) -> pd.DataFrame | None:
-    ticker = yf.Ticker(symbol)
-    df = ticker.history(period=period)
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period)
+    except Exception:
+        logger.warning("Failed to fetch stock data for %s", symbol, exc_info=True)
+        return None
     if df.empty:
         return None
     _compute_indicators(df)
@@ -1535,7 +1539,10 @@ if is_single_mode and symbol:
     else:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
-        chart_png = build_candlestick_chart(df, symbol, title=chart_title)
+        if st.session_state.analyzing and st.session_state.chart_b64:
+            chart_png = base64.b64decode(st.session_state.chart_b64)
+        else:
+            chart_png = build_candlestick_chart(df, symbol, title=chart_title)
         st.image(chart_png, width="stretch")
 
         # Determine strategic period
