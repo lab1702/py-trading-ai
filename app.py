@@ -931,7 +931,8 @@ _STREAM_RENDER_INTERVAL = 0.05  # seconds between UI re-renders during streaming
 _SCROLL_SCRIPT = (
     "<script>"
     "requestAnimationFrame(()=>{"
-    "if(frameElement)frameElement.scrollIntoView({block:'end'})"
+    "const m=window.parent.document.querySelector('section.main');"
+    "if(m)m.scrollTop=m.scrollHeight;"
     "});"
     "</script>"
 )
@@ -965,16 +966,12 @@ def _stream_to_ui(
                 with col_think:
                     st.caption("Thinking\u2026")
                     st.markdown("".join(thinking_parts))
-                    if scroll and not content_parts:
-                        components.html(_SCROLL_SCRIPT, height=0)
                 with col_content:
                     st.markdown("".join(content_parts))
-                    if scroll and content_parts:
-                        components.html(_SCROLL_SCRIPT, height=0)
             else:
                 st.markdown("".join(content_parts))
-                if scroll:
-                    components.html(_SCROLL_SCRIPT, height=0)
+            if scroll:
+                components.html(_SCROLL_SCRIPT, height=0)
 
     for kind, token in token_stream:
         if kind == "thinking":
