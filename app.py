@@ -14,6 +14,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 import mplfinance as mpf  # noqa: E402
 import numpy as np
 import pandas as pd
@@ -403,6 +404,18 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str,
     # Remove the default mplfinance title (set on ax)
     axlist[0].set_title("")
 
+    # Add legend to price panel
+    ax_price = axlist[0]
+    legend_entries = [
+        Line2D([], [], color=_CHART_COLORS["sma20"], linewidth=1, label="SMA 20"),
+        Line2D([], [], color=_CHART_COLORS["sma50"], linewidth=1, label="SMA 50"),
+        Line2D([], [], color=_CHART_COLORS["ema12"], linewidth=1, linestyle="dotted", label="EMA 12"),
+        Line2D([], [], color=_CHART_COLORS["ema26"], linewidth=1, linestyle="dotted", label="EMA 26"),
+        Line2D([], [], color=_CHART_COLORS["bb"], linewidth=1, linestyle="dashed", label="BB"),
+    ]
+    ax_price.legend(handles=legend_entries, loc="upper left", fontsize=7,
+                    facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+
     # Add horizontal threshold lines on indicator panels
     if rsi_panel is not None:
         ax_rsi = axlist[2 * rsi_panel]
@@ -410,9 +423,25 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str,
         ax_rsi.axhline(30, color=_CHART_COLORS["rsi_under"], linewidth=1, linestyle="--")
         ax_rsi.set_ylim(0, 100)
 
+    if macd_panel is not None:
+        ax_macd = axlist[2 * macd_panel]
+        macd_legend = [
+            Line2D([], [], color=_CHART_COLORS["macd_line"], linewidth=1, label="MACD"),
+            Line2D([], [], color=_CHART_COLORS["macd_signal"], linewidth=1, label="Signal"),
+        ]
+        ax_macd.legend(handles=macd_legend, loc="upper left", fontsize=7,
+                       facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+
     if adx_panel is not None:
         ax_adx = axlist[2 * adx_panel]
         ax_adx.axhline(25, color=_CHART_COLORS["adx_thresh"], linewidth=1, linestyle="--")
+        adx_legend = [
+            Line2D([], [], color=_CHART_COLORS["adx"], linewidth=2, label="ADX"),
+            Line2D([], [], color=_CHART_COLORS["plus_di"], linewidth=1, linestyle="dotted", label="+DI"),
+            Line2D([], [], color=_CHART_COLORS["minus_di"], linewidth=1, linestyle="dotted", label="-DI"),
+        ]
+        ax_adx.legend(handles=adx_legend, loc="upper left", fontsize=7,
+                      facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
 
     # Export to PNG bytes
     buf = io.BytesIO()
