@@ -20,7 +20,6 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 
 logging.basicConfig()
@@ -41,7 +40,7 @@ STRATEGIC_PERIOD_MAP = {
 
 ANALYSIS_HISTORY_FILE = Path(__file__).parent / "analysis_history.json"
 
-CHART_BASE_HEIGHT = 500
+CHART_BASE_HEIGHT = 600
 CHART_SUBCHART_HEIGHT = 200
 _DATA_TIMEOUT = 30  # seconds per supplementary data future
 _CHART_DPI = 200
@@ -414,6 +413,7 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
         figsize=(12, fig_height),
         returnfig=True,
         tight_layout=True,
+        scale_padding={"top": 1.5, "bottom": 0.8},
     )
     if addplots:
         kwargs["addplot"] = addplots
@@ -928,19 +928,6 @@ def stream_ollama_response(
 
 
 _STREAM_RENDER_INTERVAL = 0.05  # seconds between UI re-renders during streaming
-_SCROLL_SCRIPT = (
-    "<script>"
-    "requestAnimationFrame(()=>{const d=window.parent.document;"
-    "for(const s of ['section.main','[data-testid=\"stMain\"]',"
-    "'[data-testid=\"stAppViewContainer\"]'])"
-    "{const e=d.querySelector(s);if(e&&e.scrollHeight>e.clientHeight)"
-    "{e.scrollTop=e.scrollHeight;return}}"
-    "window.parent.scrollTo(0,d.body.scrollHeight);"
-    "});"
-    "</script>"
-)
-
-
 def _stream_to_ui(
     token_stream,
 ) -> tuple[str, str | None]:
@@ -962,7 +949,7 @@ def _stream_to_ui(
     last_render = 0.0
     dirty = False
 
-    def _render(scroll: bool = True) -> None:
+    def _render() -> None:
         with placeholder.container():
             if has_thinking:
                 col_think, col_content = st.columns([1, 2])
@@ -973,8 +960,6 @@ def _stream_to_ui(
                     st.markdown("".join(content_parts))
             else:
                 st.markdown("".join(content_parts))
-            if scroll:
-                components.html(_SCROLL_SCRIPT, height=0)
 
     for kind, token in token_stream:
         if kind == "thinking":
@@ -992,10 +977,9 @@ def _stream_to_ui(
         else:
             dirty = True
 
-    # Always render the final state so nothing is lost.  No scroll — streaming
-    # is complete, so the page should stop auto-scrolling.
+    # Always render the final state so nothing is lost.
     if dirty or last_render == 0.0:
-        _render(scroll=False)
+        _render()
 
     content_text = "".join(content_parts)
     thinking_text = "".join(thinking_parts) if thinking_parts else None
