@@ -93,6 +93,11 @@ _MPF_STYLE = mpf.make_mpf_style(
 )
 
 
+_LEGEND_KWARGS = dict(
+    loc="upper left", fontsize=7,
+    facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white",
+)
+
 _ALL_INDICATOR_LABELS = [
     "SMA (20, 50)",
     "EMA (12, 26)",
@@ -312,7 +317,7 @@ def compute_support_resistance(
         clusters: list[list[float]] = [[sorted_pts[0]]]
         for p in sorted_pts[1:]:
             mean_last = sum(clusters[-1]) / len(clusters[-1])
-            if mean_last != 0 and abs(p - mean_last) / mean_last <= 0.01:
+            if mean_last != 0 and abs(p - mean_last) / abs(mean_last) <= 0.01:
                 clusters[-1].append(p)
             else:
                 clusters.append([p])
@@ -417,10 +422,11 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str,
         Line2D([], [], color=_CHART_COLORS["ema26"], linewidth=1, linestyle="dotted", label="EMA 26"),
         Line2D([], [], color=_CHART_COLORS["bb"], linewidth=1, linestyle="dashed", label="BB"),
     ]
-    ax_price.legend(handles=legend_entries, loc="upper left", fontsize=7,
-                    facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+    ax_price.legend(handles=legend_entries, **_LEGEND_KWARGS)
 
-    # Add horizontal threshold lines on indicator panels
+    # Add horizontal threshold lines on indicator panels.
+    # mplfinance interleaves real axes with hidden spacer axes, so the
+    # actual axis for panel N is at index 2*N in axlist.
     if rsi_panel is not None:
         ax_rsi = axlist[2 * rsi_panel]
         ax_rsi.axhline(70, color=_CHART_COLORS["rsi_over"], linewidth=1, linestyle="--")
@@ -429,16 +435,14 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str,
         rsi_legend = [
             Line2D([], [], color=_CHART_COLORS["rsi"], linewidth=1, label="RSI"),
         ]
-        ax_rsi.legend(handles=rsi_legend, loc="upper left", fontsize=7,
-                      facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+        ax_rsi.legend(handles=rsi_legend, **_LEGEND_KWARGS)
 
     if atr_panel is not None:
         ax_atr = axlist[2 * atr_panel]
         atr_legend = [
             Line2D([], [], color=_CHART_COLORS["atr"], linewidth=1, label="ATR"),
         ]
-        ax_atr.legend(handles=atr_legend, loc="upper left", fontsize=7,
-                      facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+        ax_atr.legend(handles=atr_legend, **_LEGEND_KWARGS)
 
     if macd_panel is not None:
         ax_macd = axlist[2 * macd_panel]
@@ -446,8 +450,7 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str,
             Line2D([], [], color=_CHART_COLORS["macd_line"], linewidth=1, label="MACD"),
             Line2D([], [], color=_CHART_COLORS["macd_signal"], linewidth=1, label="Signal"),
         ]
-        ax_macd.legend(handles=macd_legend, loc="upper left", fontsize=7,
-                       facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+        ax_macd.legend(handles=macd_legend, **_LEGEND_KWARGS)
 
     if adx_panel is not None:
         ax_adx = axlist[2 * adx_panel]
@@ -457,8 +460,7 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str,
             Line2D([], [], color=_CHART_COLORS["plus_di"], linewidth=1, linestyle="dotted", label="+DI"),
             Line2D([], [], color=_CHART_COLORS["minus_di"], linewidth=1, linestyle="dotted", label="-DI"),
         ]
-        ax_adx.legend(handles=adx_legend, loc="upper left", fontsize=7,
-                      facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+        ax_adx.legend(handles=adx_legend, **_LEGEND_KWARGS)
 
     # Export to PNG bytes
     buf = io.BytesIO()
@@ -943,6 +945,8 @@ def stream_ollama_response(
 
 
 _STREAM_RENDER_INTERVAL = 0.05  # seconds between UI re-renders during streaming
+
+
 def _stream_to_ui(
     token_stream,
 ) -> tuple[str, str | None]:
@@ -1534,8 +1538,8 @@ if is_single_mode and symbol:
         except TimeoutError:
             news_headlines = []
 
-    if df is None or df.empty:
-        st.error(f"No data found for **{symbol}**. Check the symbol and try again.")
+    if df is None or df.empty or len(df) < 5:
+        st.error(f"No data found for **{symbol}** (or insufficient history). Check the symbol and try again.")
     else:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
