@@ -422,6 +422,19 @@ def build_candlestick_chart(df: pd.DataFrame, symbol: str,
         ax_rsi.axhline(70, color=_CHART_COLORS["rsi_over"], linewidth=1, linestyle="--")
         ax_rsi.axhline(30, color=_CHART_COLORS["rsi_under"], linewidth=1, linestyle="--")
         ax_rsi.set_ylim(0, 100)
+        rsi_legend = [
+            Line2D([], [], color=_CHART_COLORS["rsi"], linewidth=1, label="RSI"),
+        ]
+        ax_rsi.legend(handles=rsi_legend, loc="upper left", fontsize=7,
+                      facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
+
+    if atr_panel is not None:
+        ax_atr = axlist[2 * atr_panel]
+        atr_legend = [
+            Line2D([], [], color=_CHART_COLORS["atr"], linewidth=1, label="ATR"),
+        ]
+        ax_atr.legend(handles=atr_legend, loc="upper left", fontsize=7,
+                      facecolor="#1a1a2e", edgecolor="#2a2a4a", labelcolor="white")
 
     if macd_panel is not None:
         ax_macd = axlist[2 * macd_panel]
