@@ -930,9 +930,12 @@ def stream_ollama_response(
 _STREAM_RENDER_INTERVAL = 0.05  # seconds between UI re-renders during streaming
 _SCROLL_SCRIPT = (
     "<script>"
-    "requestAnimationFrame(()=>{"
-    "const m=window.parent.document.querySelector('section.main');"
-    "if(m)m.scrollTop=m.scrollHeight;"
+    "requestAnimationFrame(()=>{const d=window.parent.document;"
+    "for(const s of ['section.main','[data-testid=\"stMain\"]',"
+    "'[data-testid=\"stAppViewContainer\"]'])"
+    "{const e=d.querySelector(s);if(e&&e.scrollHeight>e.clientHeight)"
+    "{e.scrollTop=e.scrollHeight;return}}"
+    "window.parent.scrollTo(0,d.body.scrollHeight);"
     "});"
     "</script>"
 )
