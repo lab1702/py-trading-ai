@@ -8,7 +8,6 @@ import tempfile
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -93,33 +92,15 @@ _MPF_STYLE = mpf.make_mpf_style(
 )
 
 
-@dataclass
-class Indicators:
-    sma: bool = True
-    ema: bool = True
-    bb: bool = True
-    rsi: bool = True
-    macd: bool = True
-    atr: bool = True
-    adx: bool = True
-
-    def active_labels(self) -> list[str]:
-        labels = []
-        if self.sma:
-            labels.append("SMA (20, 50)")
-        if self.ema:
-            labels.append("EMA (12, 26)")
-        if self.bb:
-            labels.append("Bollinger Bands (20, 2σ)")
-        if self.rsi:
-            labels.append("RSI (14)")
-        if self.macd:
-            labels.append("MACD (12, 26, 9)")
-        if self.atr:
-            labels.append("ATR (14)")
-        if self.adx:
-            labels.append("ADX (14)")
-        return labels
+_ALL_INDICATOR_LABELS = [
+    "SMA (20, 50)",
+    "EMA (12, 26)",
+    "Bollinger Bands (20, 2σ)",
+    "RSI (14)",
+    "MACD (12, 26, 9)",
+    "ATR (14)",
+    "ADX (14)",
+]
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -336,32 +317,29 @@ def compute_support_resistance(
     return cluster_levels(support_pts), cluster_levels(resistance_pts)
 
 
-def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
+def build_candlestick_chart(df: pd.DataFrame, symbol: str,
                             title: str | None = None) -> bytes:
     """Build a candlestick chart and return PNG bytes."""
     price_title = title or f"{symbol.upper()} Price"
 
     # Determine which indicator panels have valid data
-    show_rsi = ind.rsi and df["RSI"].notna().any()
-    show_macd = ind.macd and df["MACD"].notna().any()
-    show_atr = ind.atr and df["ATR"].notna().any()
-    show_adx = ind.adx and df["ADX"].notna().any()
+    show_rsi = df["RSI"].notna().any()
+    show_macd = df["MACD"].notna().any()
+    show_atr = df["ATR"].notna().any()
+    show_adx = df["ADX"].notna().any()
 
     addplots: list = []
 
     # --- Overlays (panel 0 = price) ---
-    if ind.sma:
-        addplots.append(mpf.make_addplot(df["SMA_20"], panel=0, color=_CHART_COLORS["sma20"], width=1))
-        addplots.append(mpf.make_addplot(df["SMA_50"], panel=0, color=_CHART_COLORS["sma50"], width=1))
-    if ind.ema:
-        addplots.append(mpf.make_addplot(df["EMA_12"], panel=0, color=_CHART_COLORS["ema12"], width=1, linestyle="dotted"))
-        addplots.append(mpf.make_addplot(df["EMA_26"], panel=0, color=_CHART_COLORS["ema26"], width=1, linestyle="dotted"))
-    if ind.bb:
-        addplots.append(mpf.make_addplot(df["BB_Upper"], panel=0, color=_CHART_COLORS["bb"], width=1, linestyle="dashed"))
-        addplots.append(mpf.make_addplot(
-            df["BB_Lower"], panel=0, color=_CHART_COLORS["bb"], width=1, linestyle="dashed",
-            fill_between={"y1": df["BB_Upper"].values, "alpha": 0.1, "color": _CHART_COLORS["bb"]},
-        ))
+    addplots.append(mpf.make_addplot(df["SMA_20"], panel=0, color=_CHART_COLORS["sma20"], width=1))
+    addplots.append(mpf.make_addplot(df["SMA_50"], panel=0, color=_CHART_COLORS["sma50"], width=1))
+    addplots.append(mpf.make_addplot(df["EMA_12"], panel=0, color=_CHART_COLORS["ema12"], width=1, linestyle="dotted"))
+    addplots.append(mpf.make_addplot(df["EMA_26"], panel=0, color=_CHART_COLORS["ema26"], width=1, linestyle="dotted"))
+    addplots.append(mpf.make_addplot(df["BB_Upper"], panel=0, color=_CHART_COLORS["bb"], width=1, linestyle="dashed"))
+    addplots.append(mpf.make_addplot(
+        df["BB_Lower"], panel=0, color=_CHART_COLORS["bb"], width=1, linestyle="dashed",
+        fill_between={"y1": df["BB_Upper"].values, "alpha": 0.1, "color": _CHART_COLORS["bb"]},
+    ))
 
     # --- Indicator sub-panels (panel 2+ since volume is panel 1) ---
     next_panel = 2
@@ -458,7 +436,7 @@ def _price_change_stats(df: pd.DataFrame) -> tuple[float, float, float, float, f
 
 
 def _build_prompt_data_lines(
-    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
+    symbol: str, period: str, df: pd.DataFrame,
     fundamentals: dict | None = None,
     earnings_info: str | None = None,
     market_context: dict | None = None,
@@ -471,8 +449,7 @@ def _build_prompt_data_lines(
     latest = df.iloc[-1]
     prev_close, pct_change, avg_vol, latest_vol, vol_ratio = _price_change_stats(df)
 
-    active = ind.active_labels()
-    indicator_text = ", ".join(active) if active else "None"
+    indicator_text = ", ".join(_ALL_INDICATOR_LABELS)
 
     # --- Image description ---
     lines: list[str] = []
@@ -501,88 +478,81 @@ def _build_prompt_data_lines(
 
     # --- Actual indicator values ---
     lines.append("\nIndicator readings (latest bar):")
-    if ind.sma:
-        sma20 = latest.get("SMA_20")
-        sma50 = latest.get("SMA_50")
-        sma20_str = f"${sma20:.2f}" if pd.notna(sma20) else "N/A (insufficient data)"
-        sma50_str = f"${sma50:.2f}" if pd.notna(sma50) else "N/A (insufficient data)"
-        lines.append(f"- SMA 20: {sma20_str}, SMA 50: {sma50_str}")
-        if pd.notna(sma20) and pd.notna(sma50):
-            cross = "above" if sma20 > sma50 else "below"
-            lines.append(f"  SMA 20 is {cross} SMA 50 ({'bullish' if cross == 'above' else 'bearish'} alignment)")
-    if ind.ema:
-        ema12 = latest.get("EMA_12")
-        ema26 = latest.get("EMA_26")
-        ema12_str = f"${ema12:.2f}" if pd.notna(ema12) else "N/A"
-        ema26_str = f"${ema26:.2f}" if pd.notna(ema26) else "N/A"
-        lines.append(f"- EMA 12: {ema12_str}, EMA 26: {ema26_str}")
-        if pd.notna(ema12) and pd.notna(ema26):
-            cross = "above" if ema12 > ema26 else "below"
-            lines.append(f"  EMA 12 is {cross} EMA 26 ({'bullish' if cross == 'above' else 'bearish'} alignment)")
-    if ind.bb:
-        bb_upper = latest.get("BB_Upper")
-        bb_lower = latest.get("BB_Lower")
-        bb_mid = latest.get("BB_Mid")
-        if pd.notna(bb_upper) and pd.notna(bb_lower):
-            close_price = latest["Close"]
-            lines.append(f"- Bollinger Bands: Upper ${bb_upper:.2f}, Mid ${bb_mid:.2f}, Lower ${bb_lower:.2f}")
-            if close_price > bb_upper:
-                lines.append("  Price is ABOVE upper band (overbought / breakout)")
-            elif close_price < bb_lower:
-                lines.append("  Price is BELOW lower band (oversold / breakdown)")
-            elif bb_upper != bb_lower:
-                pct_bb = (close_price - bb_lower) / (bb_upper - bb_lower) * 100
-                lines.append(f"  Price is at {pct_bb:.0f}% of band width")
-            else:
-                lines.append("  Price is at mid-band (bands are flat)")
+    sma20 = latest.get("SMA_20")
+    sma50 = latest.get("SMA_50")
+    sma20_str = f"${sma20:.2f}" if pd.notna(sma20) else "N/A (insufficient data)"
+    sma50_str = f"${sma50:.2f}" if pd.notna(sma50) else "N/A (insufficient data)"
+    lines.append(f"- SMA 20: {sma20_str}, SMA 50: {sma50_str}")
+    if pd.notna(sma20) and pd.notna(sma50):
+        cross = "above" if sma20 > sma50 else "below"
+        lines.append(f"  SMA 20 is {cross} SMA 50 ({'bullish' if cross == 'above' else 'bearish'} alignment)")
+    ema12 = latest.get("EMA_12")
+    ema26 = latest.get("EMA_26")
+    ema12_str = f"${ema12:.2f}" if pd.notna(ema12) else "N/A"
+    ema26_str = f"${ema26:.2f}" if pd.notna(ema26) else "N/A"
+    lines.append(f"- EMA 12: {ema12_str}, EMA 26: {ema26_str}")
+    if pd.notna(ema12) and pd.notna(ema26):
+        cross = "above" if ema12 > ema26 else "below"
+        lines.append(f"  EMA 12 is {cross} EMA 26 ({'bullish' if cross == 'above' else 'bearish'} alignment)")
+    bb_upper = latest.get("BB_Upper")
+    bb_lower = latest.get("BB_Lower")
+    bb_mid = latest.get("BB_Mid")
+    if pd.notna(bb_upper) and pd.notna(bb_lower):
+        close_price = latest["Close"]
+        lines.append(f"- Bollinger Bands: Upper ${bb_upper:.2f}, Mid ${bb_mid:.2f}, Lower ${bb_lower:.2f}")
+        if close_price > bb_upper:
+            lines.append("  Price is ABOVE upper band (overbought / breakout)")
+        elif close_price < bb_lower:
+            lines.append("  Price is BELOW lower band (oversold / breakdown)")
+        elif bb_upper != bb_lower:
+            pct_bb = (close_price - bb_lower) / (bb_upper - bb_lower) * 100
+            lines.append(f"  Price is at {pct_bb:.0f}% of band width")
         else:
-            lines.append("- Bollinger Bands: N/A (insufficient data)")
-    if ind.rsi:
-        rsi = latest.get("RSI")
-        if pd.notna(rsi):
-            rsi_label = " (overbought)" if rsi > 70 else " (oversold)" if rsi < 30 else ""
-            lines.append(f"- RSI (14): {rsi:.1f}{rsi_label}")
+            lines.append("  Price is at mid-band (bands are flat)")
+    else:
+        lines.append("- Bollinger Bands: N/A (insufficient data)")
+    rsi = latest.get("RSI")
+    if pd.notna(rsi):
+        rsi_label = " (overbought)" if rsi > 70 else " (oversold)" if rsi < 30 else ""
+        lines.append(f"- RSI (14): {rsi:.1f}{rsi_label}")
+    else:
+        lines.append("- RSI (14): N/A (insufficient data)")
+    macd = latest.get("MACD")
+    macd_sig = latest.get("MACD_Signal")
+    macd_hist = latest.get("MACD_Hist")
+    if pd.notna(macd) and pd.notna(macd_sig):
+        cross = "above" if macd > macd_sig else "below"
+        lines.append(f"- MACD: {macd:.4f}, Signal: {macd_sig:.4f}, Histogram: {macd_hist:.4f}")
+        lines.append(f"  MACD is {cross} signal line ({'bullish' if cross == 'above' else 'bearish'})")
+    else:
+        lines.append("- MACD: N/A (insufficient data)")
+    atr_val = latest.get("ATR")
+    if pd.notna(atr_val):
+        close_price = latest["Close"]
+        if close_price > 0:
+            atr_pct = (atr_val / close_price) * 100
+            lines.append(f"- ATR (14): ${atr_val:.2f} ({atr_pct:.1f}% of price)")
         else:
-            lines.append("- RSI (14): N/A (insufficient data)")
-    if ind.macd:
-        macd = latest.get("MACD")
-        macd_sig = latest.get("MACD_Signal")
-        macd_hist = latest.get("MACD_Hist")
-        if pd.notna(macd) and pd.notna(macd_sig):
-            cross = "above" if macd > macd_sig else "below"
-            lines.append(f"- MACD: {macd:.4f}, Signal: {macd_sig:.4f}, Histogram: {macd_hist:.4f}")
-            lines.append(f"  MACD is {cross} signal line ({'bullish' if cross == 'above' else 'bearish'})")
+            lines.append(f"- ATR (14): ${atr_val:.2f}")
+    else:
+        lines.append("- ATR (14): N/A (insufficient data)")
+    adx_val = latest.get("ADX")
+    plus_di = latest.get("Plus_DI")
+    minus_di = latest.get("Minus_DI")
+    if pd.notna(adx_val) and pd.notna(plus_di) and pd.notna(minus_di):
+        if adx_val < 20:
+            adx_label = "weak/no trend"
+        elif adx_val < 25:
+            adx_label = "emerging trend"
+        elif adx_val < 50:
+            adx_label = "strong trend"
         else:
-            lines.append("- MACD: N/A (insufficient data)")
-    if ind.atr:
-        atr_val = latest.get("ATR")
-        if pd.notna(atr_val):
-            close_price = latest["Close"]
-            if close_price > 0:
-                atr_pct = (atr_val / close_price) * 100
-                lines.append(f"- ATR (14): ${atr_val:.2f} ({atr_pct:.1f}% of price)")
-            else:
-                lines.append(f"- ATR (14): ${atr_val:.2f}")
-        else:
-            lines.append("- ATR (14): N/A (insufficient data)")
-    if ind.adx:
-        adx_val = latest.get("ADX")
-        plus_di = latest.get("Plus_DI")
-        minus_di = latest.get("Minus_DI")
-        if pd.notna(adx_val) and pd.notna(plus_di) and pd.notna(minus_di):
-            if adx_val < 20:
-                adx_label = "weak/no trend"
-            elif adx_val < 25:
-                adx_label = "emerging trend"
-            elif adx_val < 50:
-                adx_label = "strong trend"
-            else:
-                adx_label = "very strong trend"
-            dominant = "+DI (bullish)" if plus_di > minus_di else "-DI (bearish)"
-            lines.append(f"- ADX (14): {adx_val:.1f} ({adx_label})")
-            lines.append(f"  +DI: {plus_di:.1f}, -DI: {minus_di:.1f} — {dominant} dominant")
-        else:
-            lines.append("- ADX (14): N/A (insufficient data)")
+            adx_label = "very strong trend"
+        dominant = "+DI (bullish)" if plus_di > minus_di else "-DI (bearish)"
+        lines.append(f"- ADX (14): {adx_val:.1f} ({adx_label})")
+        lines.append(f"  +DI: {plus_di:.1f}, -DI: {minus_di:.1f} — {dominant} dominant")
+    else:
+        lines.append("- ADX (14): N/A (insufficient data)")
 
     # --- Fundamental context ---
     if fundamentals:
@@ -662,7 +632,7 @@ def _build_prompt_data_lines(
 
 
 def build_observation_messages(
-    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
+    symbol: str, period: str, df: pd.DataFrame,
     fundamentals: dict | None = None,
     earnings_info: str | None = None,
     market_context: dict | None = None,
@@ -691,7 +661,7 @@ def build_observation_messages(
     )
 
     lines = _build_prompt_data_lines(
-        symbol, period, df, ind,
+        symbol, period, df,
         fundamentals=fundamentals,
         earnings_info=earnings_info,
         market_context=market_context,
@@ -709,7 +679,7 @@ def build_observation_messages(
 
 
 def build_analysis_messages(
-    symbol: str, period: str, df: pd.DataFrame, ind: Indicators,
+    symbol: str, period: str, df: pd.DataFrame,
     fundamentals: dict | None = None,
     earnings_info: str | None = None,
     market_context: dict | None = None,
@@ -750,8 +720,7 @@ def build_analysis_messages(
     if observations is not None:
         # Slim prompt: just context + observations, no redundant data lines
         latest = df.iloc[-1]
-        active = ind.active_labels()
-        indicator_text = ", ".join(active) if active else "None"
+        indicator_text = ", ".join(_ALL_INDICATOR_LABELS)
         lines = [
             f"Synthesize a technical analysis for {symbol.upper()}.",
             f"Timeframe: {period}, Latest close: ${latest['Close']:.2f}",
@@ -765,7 +734,7 @@ def build_analysis_messages(
         ]
     else:
         lines = _build_prompt_data_lines(
-            symbol, period, df, ind,
+            symbol, period, df,
             fundamentals=fundamentals,
             earnings_info=earnings_info,
             market_context=market_context,
@@ -1061,7 +1030,6 @@ def build_consensus_messages(
     model_analyses: dict[str, str],
     model_sizes: dict[str, str],
     df: pd.DataFrame,
-    ind: Indicators,
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the consensus summarizer."""
     system_prompt = (
@@ -1074,8 +1042,7 @@ def build_consensus_messages(
     )
 
     latest = df.iloc[-1]
-    active = ind.active_labels()
-    indicator_text = ", ".join(active) if active else "None"
+    indicator_text = ", ".join(_ALL_INDICATOR_LABELS)
 
     analyses_text = ""
     for model_name, analysis in model_analyses.items():
@@ -1103,7 +1070,7 @@ def build_consensus_messages(
 
 
 def build_watchlist_prompt(
-    symbol: str, df: pd.DataFrame, ind: Indicators
+    symbol: str, df: pd.DataFrame,
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for a brief watchlist scan."""
     system_prompt = (
@@ -1121,20 +1088,17 @@ def build_watchlist_prompt(
         f"- Volume: {latest_vol:,.0f} ({vol_ratio:.1f}x avg)",
     ]
 
-    if ind.sma:
-        sma20 = latest.get("SMA_20")
-        sma50 = latest.get("SMA_50")
-        if pd.notna(sma20) and pd.notna(sma50):
-            lines.append(f"- SMA 20: ${sma20:.2f}, SMA 50: ${sma50:.2f}")
-    if ind.rsi:
-        rsi = latest.get("RSI")
-        if pd.notna(rsi):
-            lines.append(f"- RSI: {rsi:.1f}")
-    if ind.macd:
-        macd = latest.get("MACD")
-        macd_sig = latest.get("MACD_Signal")
-        if pd.notna(macd) and pd.notna(macd_sig):
-            lines.append(f"- MACD: {macd:.4f}, Signal: {macd_sig:.4f}")
+    sma20 = latest.get("SMA_20")
+    sma50 = latest.get("SMA_50")
+    if pd.notna(sma20) and pd.notna(sma50):
+        lines.append(f"- SMA 20: ${sma20:.2f}, SMA 50: ${sma50:.2f}")
+    rsi = latest.get("RSI")
+    if pd.notna(rsi):
+        lines.append(f"- RSI: {rsi:.1f}")
+    macd = latest.get("MACD")
+    macd_sig = latest.get("MACD_Signal")
+    if pd.notna(macd) and pd.notna(macd_sig):
+        lines.append(f"- MACD: {macd:.4f}, Signal: {macd_sig:.4f}")
 
     lines.append(
         "\nRespond with exactly:\n"
@@ -1305,33 +1269,6 @@ else:
 period = st.sidebar.selectbox(
     "Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
     index=2, on_change=_on_shared_input_change, disabled=locked,
-)
-
-# Sidebar: indicator toggles
-st.sidebar.header("Technical Indicators")
-show_sma = st.sidebar.checkbox("SMA (20, 50)", value=True, on_change=_on_shared_input_change,
-                               disabled=locked)
-show_ema = st.sidebar.checkbox("EMA (12, 26)", value=True, on_change=_on_shared_input_change,
-                               disabled=locked)
-show_bb = st.sidebar.checkbox("Bollinger Bands", value=True, on_change=_on_shared_input_change,
-                              disabled=locked)
-show_rsi = st.sidebar.checkbox("RSI (14)", value=True, on_change=_on_shared_input_change,
-                               disabled=locked)
-show_macd = st.sidebar.checkbox("MACD", value=True, on_change=_on_shared_input_change,
-                                disabled=locked)
-show_atr = st.sidebar.checkbox("ATR (14)", value=True, on_change=_on_shared_input_change,
-                               disabled=locked)
-show_adx = st.sidebar.checkbox("ADX (14)", value=True, on_change=_on_shared_input_change,
-                               disabled=locked)
-
-ind = Indicators(
-    sma=show_sma,
-    ema=show_ema,
-    bb=show_bb,
-    rsi=show_rsi,
-    macd=show_macd,
-    atr=show_atr,
-    adx=show_adx,
 )
 
 st.sidebar.header("Analysis Settings")
@@ -1565,7 +1502,7 @@ if is_single_mode and symbol:
     else:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
-        chart_png = build_candlestick_chart(df, symbol, ind, title=chart_title)
+        chart_png = build_candlestick_chart(df, symbol, title=chart_title)
         st.image(chart_png, width="stretch")
 
         # Determine strategic period
@@ -1593,7 +1530,7 @@ if is_single_mode and symbol:
                     if strategic_df is not None and not strategic_df.empty:
                         strategic_title = f"{company_name} ({symbol.upper()}) - {strategic_period}"
                         strategic_png = build_candlestick_chart(
-                            strategic_df, symbol, ind, title=strategic_title
+                            strategic_df, symbol, title=strategic_title
                         )
                         st.session_state.strategic_chart_b64 = base64.b64encode(
                             strategic_png
@@ -1616,7 +1553,7 @@ if is_single_mode and symbol:
 
             # Common prompt args for both passes
             prompt_args = dict(
-                symbol=symbol, period=period, df=df, ind=ind,
+                symbol=symbol, period=period, df=df,
                 fundamentals=fundamentals,
                 earnings_info=earnings_info,
                 market_context=market_ctx,
@@ -1691,7 +1628,7 @@ if is_single_mode and symbol:
                         for m in available_models
                     }
                     consensus_sys, consensus_user = build_consensus_messages(
-                        symbol, successful, model_sizes, df, ind
+                        symbol, successful, model_sizes, df
                     )
                     result, con_error = _run_ollama_pass(
                         consensus_model, consensus_sys, consensus_user,
@@ -1820,9 +1757,9 @@ elif not is_single_mode:
                     }
                 else:
                     wl_title = f"{wl_company} ({current_sym})"
-                    wl_png = build_candlestick_chart(wl_df, current_sym, ind, title=wl_title)
+                    wl_png = build_candlestick_chart(wl_df, current_sym, title=wl_title)
                     wl_img = base64.b64encode(wl_png).decode("utf-8")
-                    sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df, ind)
+                    sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df)
                     with st.status(f"Scanning {current_sym} ({wl_step}/{wl_total})...", expanded=False) as wl_status:
                         analysis_text, wl_error = _run_ollama_pass(
                             wl_model, sys_prompt, usr_prompt, [wl_img],
