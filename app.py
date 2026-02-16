@@ -1321,20 +1321,12 @@ def _uppercase_symbol():
 
 locked = st.session_state.analyzing or st.session_state.watchlist_analyzing
 
-if locked:
-    def _stop_analysis():
-        st.session_state.analyzing = False
-        st.session_state.watchlist_analyzing = False
-        st.session_state.done = bool(st.session_state.ai_outputs)
-        st.session_state.watchlist_done = bool(st.session_state.watchlist_results)
-        st.toast("Analysis stopped.")
-
-    st.sidebar.button(
-        "Stop after current step",
-        on_click=_stop_analysis,
-        type="secondary",
-        use_container_width=True,
-    )
+def _stop_analysis():
+    st.session_state.analyzing = False
+    st.session_state.watchlist_analyzing = False
+    st.session_state.done = bool(st.session_state.ai_outputs)
+    st.session_state.watchlist_done = bool(st.session_state.watchlist_results)
+    st.toast("Analysis stopped.")
 
 # Sidebar: mode selection
 mode = st.sidebar.radio(
@@ -1518,6 +1510,14 @@ if is_single_mode:
         st.session_state.strategic_chart_attempted = False
         st.rerun()
 
+    if locked:
+        st.sidebar.button(
+            "Stop after current step",
+            on_click=_stop_analysis,
+            type="secondary",
+            use_container_width=True,
+        )
+
 else:
     # ── Watchlist mode button label ──
     if st.session_state.watchlist_analyzing:
@@ -1567,6 +1567,15 @@ else:
         st.session_state.watchlist_results = {}
         st.session_state.watchlist_model = selected_watchlist_model
         st.rerun()
+
+    if locked:
+        st.sidebar.button(
+            "Stop after current step",
+            on_click=_stop_analysis,
+            type="secondary",
+            use_container_width=True,
+            key="stop_watchlist",
+        )
 
 
 # ── Main Content ─────────────────────────────────────────────────────────────
