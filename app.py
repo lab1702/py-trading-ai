@@ -1646,7 +1646,7 @@ if is_single_mode and symbol:
                 try:
                     # --- Pass 1: Observation ---
                     obs_system, obs_user = build_observation_messages(**prompt_args)
-                    with st.status("Pass 1/2: Observing...", expanded=False) as status:
+                    with st.status("Pass 1/2: Observing...", expanded=True) as status:
                         obs_text, obs_error = _run_ollama_pass(
                             current_model, obs_system, obs_user, images_b64,
                             label="Observation pass",
