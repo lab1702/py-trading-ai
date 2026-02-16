@@ -1,6 +1,4 @@
 streamlit
-plotly
+mplfinance
 yfinance
 requests
-kaleido<0.3
-lxml

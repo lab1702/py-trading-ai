@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Stock Chart AI Analyzer — a Streamlit web app that displays interactive candlestick charts (via Plotly/yfinance) and sends chart screenshots to one or more local Ollama vision models for AI-powered technical analysis, with optional multi-model consensus summaries. Supports single-symbol deep analysis and a watchlist mode for quick multi-symbol scans.
+Stock Chart AI Analyzer — a Streamlit web app that displays candlestick charts (via mplfinance/yfinance) and sends chart screenshots to one or more local Ollama vision models for AI-powered technical analysis, with optional multi-model consensus summaries. Supports single-symbol deep analysis and a watchlist mode for quick multi-symbol scans.
 
 ## Commands
 
@@ -34,8 +34,8 @@ This is a single-file application (`app.py`, ~1900 lines). All logic lives there
 - `_price_change_stats()` returns `(prev_close, pct_change, avg_vol, latest_vol, vol_ratio)` — callers use the returned `prev_close` rather than recomputing it.
 
 ### Chart Layer
-- `build_candlestick_chart()` constructs a Plotly `Figure` with dynamic subplots — the number of rows varies based on which indicators (RSI, MACD, ATR, ADX) are enabled and have valid data. Helper functions `_add_overlays`, `_add_volume`, `_add_rsi`, `_add_macd`, `_add_atr`, `_add_adx` each add traces to specific subplot rows.
-- `chart_to_base64_png(fig)` exports the figure to a base64-encoded PNG using Kaleido (1200px width, 2x scale). It reads height directly from `fig.layout.height` to stay in sync with `build_candlestick_chart()`.
+- `build_candlestick_chart()` builds a candlestick chart using `mplfinance` and returns PNG `bytes`. Panel 0 = price + overlays, panel 1 = volume, panels 2+ = RSI/MACD/ATR/ADX dynamically assigned based on which have valid data. Overlays and indicators are added via `mpf.make_addplot()`. Horizontal threshold lines (RSI 70/30, ADX 25) are drawn via `axhline()` on the axes returned by `returnfig=True`. The figure is exported via `fig.savefig()` to a `BytesIO` buffer at `_CHART_DPI` (200), then `plt.close(fig)` prevents memory leaks.
+- `_CHART_COLORS` dict centralizes all color hex values. `_MPF_STYLE` (via `mpf.make_mpf_style()` + `mpf.make_marketcolors()`) replicates the dark theme (bg `#1a1a2e`, plot bg `#16213e`, grid `#2a2a4a`, green/red candles). `matplotlib.use("Agg")` is called before any other matplotlib import to avoid GUI backend errors in Streamlit's headless environment.
 
 ### AI Layer
 - `fetch_ollama_models()` queries the local Ollama API (`/api/tags` + `/api/show` in parallel via ThreadPoolExecutor) to discover all models, their capabilities, and context length, cached 30 sec. Context length is extracted from `model_info[<arch>.context_length]` in the `/api/show` response.
@@ -77,6 +77,6 @@ This is a single-file application (`app.py`, ~1900 lines). All logic lives there
 
 ## Dependencies
 
-Python 3.13+. Key packages: `streamlit`, `plotly`, `yfinance`, `requests`, `kaleido` (for Plotly image export), `lxml`. NumPy and Pandas are transitive deps used directly. All dependencies are pinned with `>=current,<next_major` bounds in `requirements.txt`.
+Python 3.13+. Key packages: `streamlit`, `mplfinance` (matplotlib-based candlestick charting with native PNG export), `yfinance`, `requests`. NumPy and Pandas are transitive deps used directly.
 
 - `logging.basicConfig()` is called at module level so that `logger.warning()` / `logger.info()` calls throughout the app produce visible output.

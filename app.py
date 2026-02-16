@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import logging
 import os
@@ -11,13 +12,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import mplfinance as mpf  # noqa: E402
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 import yfinance as yf
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
@@ -40,6 +43,54 @@ ANALYSIS_HISTORY_FILE = Path(__file__).parent / "analysis_history.json"
 CHART_BASE_HEIGHT = 500
 CHART_SUBCHART_HEIGHT = 200
 _DATA_TIMEOUT = 30  # seconds per supplementary data future
+_CHART_DPI = 200
+
+_CHART_COLORS = {
+    "candle_up": "#26a69a",
+    "candle_down": "#ef5350",
+    "sma20": "#ff9800",
+    "sma50": "#e040fb",
+    "ema12": "#00e5ff",
+    "ema26": "#ff4081",
+    "bb": "#78909c",
+    "rsi": "#e040fb",
+    "rsi_over": "#ef5350",
+    "rsi_under": "#26a69a",
+    "macd_line": "#42a5f5",
+    "macd_signal": "#ff9800",
+    "macd_hist_pos": "#26a69a",
+    "macd_hist_neg": "#ef5350",
+    "atr": "#ffa726",
+    "adx": "#ab47bc",
+    "plus_di": "#26a69a",
+    "minus_di": "#ef5350",
+    "adx_thresh": "#78909c",
+    "volume_up": "#26a69a",
+    "volume_down": "#ef5350",
+}
+
+_MPF_MC = mpf.make_marketcolors(
+    up=_CHART_COLORS["candle_up"],
+    down=_CHART_COLORS["candle_down"],
+    edge="inherit",
+    wick="inherit",
+    volume={"up": _CHART_COLORS["volume_up"], "down": _CHART_COLORS["volume_down"]},
+)
+_MPF_STYLE = mpf.make_mpf_style(
+    marketcolors=_MPF_MC,
+    facecolor="#16213e",
+    figcolor="#1a1a2e",
+    gridcolor="#2a2a4a",
+    gridstyle="--",
+    gridaxis="both",
+    rc={
+        "axes.labelcolor": "white",
+        "xtick.color": "white",
+        "ytick.color": "white",
+        "text.color": "white",
+        "axes.edgecolor": "#2a2a4a",
+    },
+)
 
 
 @dataclass
@@ -285,222 +336,112 @@ def compute_support_resistance(
     return cluster_levels(support_pts), cluster_levels(resistance_pts)
 
 
-def _add_overlays(fig: go.Figure, df: pd.DataFrame, ind: Indicators) -> None:
-    """Add overlay indicator traces to the price row."""
-    if ind.sma:
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["SMA_20"], name="SMA 20",
-                       line=dict(width=1, color="#ff9800")),
-            row=1, col=1,
-        )
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["SMA_50"], name="SMA 50",
-                       line=dict(width=1, color="#e040fb")),
-            row=1, col=1,
-        )
-
-    if ind.ema:
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["EMA_12"], name="EMA 12",
-                       line=dict(width=1, color="#00e5ff", dash="dot")),
-            row=1, col=1,
-        )
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["EMA_26"], name="EMA 26",
-                       line=dict(width=1, color="#ff4081", dash="dot")),
-            row=1, col=1,
-        )
-
-    if ind.bb:
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["BB_Upper"], name="BB Upper",
-                       line=dict(width=1, color="#78909c", dash="dash")),
-            row=1, col=1,
-        )
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["BB_Lower"], name="BB Lower",
-                       line=dict(width=1, color="#78909c", dash="dash"),
-                       fill="tonexty", fillcolor="rgba(120,144,156,0.1)"),
-            row=1, col=1,
-        )
-
-
-def _add_volume(fig: go.Figure, df: pd.DataFrame) -> None:
-    """Add volume bar chart to row 2."""
-    vol_colors = ["#26a69a" if c >= o else "#ef5350"
-                  for c, o in zip(df["Close"], df["Open"])]
-    fig.add_trace(
-        go.Bar(x=df.index, y=df["Volume"], name="Volume",
-               marker_color=vol_colors, opacity=0.5, showlegend=False),
-        row=2, col=1,
-    )
-
-
-def _add_rsi(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
-    """Add RSI sub-chart at the given row."""
-    fig.add_trace(
-        go.Scatter(x=df.index, y=df["RSI"], name="RSI",
-                   line=dict(width=1, color="#e040fb")),
-        row=row, col=1,
-    )
-    fig.add_hline(y=70, line_dash="dash", line_color="#ef5350",
-                  line_width=1, row=row, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#26a69a",
-                  line_width=1, row=row, col=1)
-    fig.update_yaxes(range=[0, 100], row=row, col=1)
-
-
-def _add_macd(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
-    """Add MACD sub-chart at the given row."""
-    fig.add_trace(
-        go.Scatter(x=df.index, y=df["MACD"], name="MACD",
-                   line=dict(width=1, color="#42a5f5")),
-        row=row, col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=df.index, y=df["MACD_Signal"], name="Signal",
-                   line=dict(width=1, color="#ff9800")),
-        row=row, col=1,
-    )
-    colors = ["#26a69a" if v >= 0 else "#ef5350" for v in df["MACD_Hist"].fillna(0)]
-    fig.add_trace(
-        go.Bar(x=df.index, y=df["MACD_Hist"], name="Histogram",
-               marker_color=colors, showlegend=False),
-        row=row, col=1,
-    )
-
-
-def _add_atr(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
-    """Add ATR sub-chart at the given row."""
-    fig.add_trace(
-        go.Scatter(x=df.index, y=df["ATR"], name="ATR",
-                   line=dict(width=1, color="#ffa726")),
-        row=row, col=1,
-    )
-
-
-def _add_adx(fig: go.Figure, df: pd.DataFrame, row: int) -> None:
-    """Add ADX sub-chart at the given row."""
-    fig.add_trace(
-        go.Scatter(x=df.index, y=df["ADX"], name="ADX",
-                   line=dict(width=2, color="#ab47bc")),
-        row=row, col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=df.index, y=df["Plus_DI"], name="+DI",
-                   line=dict(width=1, color="#26a69a", dash="dot")),
-        row=row, col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=df.index, y=df["Minus_DI"], name="-DI",
-                   line=dict(width=1, color="#ef5350", dash="dot")),
-        row=row, col=1,
-    )
-    fig.add_hline(y=25, line_dash="dash", line_color="#78909c",
-                  line_width=1, row=row, col=1)
-
-
 def build_candlestick_chart(df: pd.DataFrame, symbol: str, ind: Indicators,
-                            title: str | None = None) -> go.Figure:
-    # Determine subplot layout
-    rows = 2
-    row_heights = [0.5, 0.15]
+                            title: str | None = None) -> bytes:
+    """Build a candlestick chart and return PNG bytes."""
     price_title = title or f"{symbol.upper()} Price"
-    subplot_titles = [price_title, "Volume"]
 
-    # Only add sub-chart rows for indicators with valid data
+    # Determine which indicator panels have valid data
     show_rsi = ind.rsi and df["RSI"].notna().any()
     show_macd = ind.macd and df["MACD"].notna().any()
     show_atr = ind.atr and df["ATR"].notna().any()
     show_adx = ind.adx and df["ADX"].notna().any()
 
+    addplots: list = []
+
+    # --- Overlays (panel 0 = price) ---
+    if ind.sma:
+        addplots.append(mpf.make_addplot(df["SMA_20"], panel=0, color=_CHART_COLORS["sma20"], width=1))
+        addplots.append(mpf.make_addplot(df["SMA_50"], panel=0, color=_CHART_COLORS["sma50"], width=1))
+    if ind.ema:
+        addplots.append(mpf.make_addplot(df["EMA_12"], panel=0, color=_CHART_COLORS["ema12"], width=1, linestyle="dotted"))
+        addplots.append(mpf.make_addplot(df["EMA_26"], panel=0, color=_CHART_COLORS["ema26"], width=1, linestyle="dotted"))
+    if ind.bb:
+        addplots.append(mpf.make_addplot(df["BB_Upper"], panel=0, color=_CHART_COLORS["bb"], width=1, linestyle="dashed"))
+        addplots.append(mpf.make_addplot(
+            df["BB_Lower"], panel=0, color=_CHART_COLORS["bb"], width=1, linestyle="dashed",
+            fill_between={"y1": df["BB_Upper"].values, "alpha": 0.1, "color": _CHART_COLORS["bb"]},
+        ))
+
+    # --- Indicator sub-panels (panel 2+ since volume is panel 1) ---
+    next_panel = 2
+
+    rsi_panel = None
     if show_rsi:
-        rows += 1
-        row_heights.append(0.2)
-        subplot_titles.append("RSI (14)")
+        rsi_panel = next_panel
+        addplots.append(mpf.make_addplot(df["RSI"], panel=rsi_panel, color=_CHART_COLORS["rsi"], width=1, ylabel="RSI (14)"))
+        next_panel += 1
+
+    macd_panel = None
     if show_macd:
-        rows += 1
-        row_heights.append(0.2)
-        subplot_titles.append("MACD")
+        macd_panel = next_panel
+        addplots.append(mpf.make_addplot(df["MACD"], panel=macd_panel, color=_CHART_COLORS["macd_line"], width=1, ylabel="MACD"))
+        addplots.append(mpf.make_addplot(df["MACD_Signal"], panel=macd_panel, color=_CHART_COLORS["macd_signal"], width=1))
+        hist_colors = [_CHART_COLORS["macd_hist_pos"] if v >= 0 else _CHART_COLORS["macd_hist_neg"]
+                       for v in df["MACD_Hist"].fillna(0)]
+        addplots.append(mpf.make_addplot(df["MACD_Hist"], panel=macd_panel, type="bar", color=hist_colors))
+        next_panel += 1
+
+    atr_panel = None
     if show_atr:
-        rows += 1
-        row_heights.append(0.2)
-        subplot_titles.append("ATR (14)")
+        atr_panel = next_panel
+        addplots.append(mpf.make_addplot(df["ATR"], panel=atr_panel, color=_CHART_COLORS["atr"], width=1, ylabel="ATR (14)"))
+        next_panel += 1
+
+    adx_panel = None
     if show_adx:
-        rows += 1
-        row_heights.append(0.2)
-        subplot_titles.append("ADX (14)")
+        adx_panel = next_panel
+        addplots.append(mpf.make_addplot(df["ADX"], panel=adx_panel, color=_CHART_COLORS["adx"], width=2, ylabel="ADX (14)"))
+        addplots.append(mpf.make_addplot(df["Plus_DI"], panel=adx_panel, color=_CHART_COLORS["plus_di"], width=1, linestyle="dotted"))
+        addplots.append(mpf.make_addplot(df["Minus_DI"], panel=adx_panel, color=_CHART_COLORS["minus_di"], width=1, linestyle="dotted"))
+        next_panel += 1
 
-    # Normalize row heights so they sum to 1
-    total = sum(row_heights)
-    row_heights = [h / total for h in row_heights]
+    # Panel ratios: price(5), volume(1.5), then 2 per indicator panel
+    num_ind_panels = sum([show_rsi, show_macd, show_atr, show_adx])
+    panel_ratios = [5, 1.5] + [2] * num_ind_panels
 
-    fig = make_subplots(
-        rows=rows,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=row_heights,
-        subplot_titles=subplot_titles,
+    chart_height_px = CHART_BASE_HEIGHT + num_ind_panels * CHART_SUBCHART_HEIGHT
+    fig_height = chart_height_px / 100  # inches at DPI 200
+
+    kwargs: dict = dict(
+        type="candle",
+        style=_MPF_STYLE,
+        title=price_title,
+        volume=True,
+        volume_panel=1,
+        panel_ratios=panel_ratios,
+        figsize=(12, fig_height),
+        returnfig=True,
+        tight_layout=True,
     )
+    if addplots:
+        kwargs["addplot"] = addplots
 
-    # Row 1: Candlestick + overlays
-    fig.add_trace(
-        go.Candlestick(
-            x=df.index,
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"],
-            name="Price",
-            showlegend=False,
-        ),
-        row=1, col=1,
-    )
-    _add_overlays(fig, df, ind)
+    fig, axlist = mpf.plot(df, **kwargs)
 
-    # Row 2: Volume
-    _add_volume(fig, df)
+    # Style the title
+    fig.suptitle(price_title, color="white", fontsize=14, y=0.98)
+    # Remove the default mplfinance title (set on ax)
+    axlist[0].set_title("")
 
-    # Remaining rows: RSI / MACD / ATR / ADX (only if data exists)
-    current_row = 3
-    if show_rsi:
-        _add_rsi(fig, df, current_row)
-        current_row += 1
-    if show_macd:
-        _add_macd(fig, df, current_row)
-        current_row += 1
-    if show_atr:
-        _add_atr(fig, df, current_row)
-        current_row += 1
-    if show_adx:
-        _add_adx(fig, df, current_row)
+    # Add horizontal threshold lines on indicator panels
+    if rsi_panel is not None:
+        ax_rsi = axlist[2 * rsi_panel]
+        ax_rsi.axhline(70, color=_CHART_COLORS["rsi_over"], linewidth=1, linestyle="--")
+        ax_rsi.axhline(30, color=_CHART_COLORS["rsi_under"], linewidth=1, linestyle="--")
+        ax_rsi.set_ylim(0, 100)
 
-    extra = sum([show_rsi, show_macd, show_atr, show_adx])
-    chart_height = int(CHART_BASE_HEIGHT + extra * CHART_SUBCHART_HEIGHT)
+    if adx_panel is not None:
+        ax_adx = axlist[2 * adx_panel]
+        ax_adx.axhline(25, color=_CHART_COLORS["adx_thresh"], linewidth=1, linestyle="--")
 
-    # Dark theme
-    grid_color = "#2a2a4a"
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#1a1a2e",
-        plot_bgcolor="#16213e",
-        font=dict(size=14),
-        xaxis_rangeslider_visible=False,
-        height=chart_height,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    # Apply grid color to all axes
-    fig.update_xaxes(gridcolor=grid_color)
-    fig.update_yaxes(gridcolor=grid_color)
-
-    return fig
-
-
-def chart_to_base64_png(fig: go.Figure) -> str:
-    img_height = int(fig.layout.height)
-    img_bytes = fig.to_image(format="png", width=1200, height=img_height, scale=2)
-    return base64.b64encode(img_bytes).decode("utf-8")
+    # Export to PNG bytes
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=_CHART_DPI, bbox_inches="tight",
+                facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
 
 
 def _price_change_stats(df: pd.DataFrame) -> tuple[float, float, float, float, float]:
@@ -1625,8 +1566,8 @@ if is_single_mode and symbol:
     else:
         support_levels, resistance_levels = compute_support_resistance(df)
         chart_title = f"{company_name} ({symbol.upper()})"
-        fig = build_candlestick_chart(df, symbol, ind, title=chart_title)
-        st.plotly_chart(fig, width="stretch", height=int(fig.layout.height))
+        chart_png = build_candlestick_chart(df, symbol, ind, title=chart_title)
+        st.image(chart_png, use_container_width=True)
 
         # Determine strategic period
         strategic_period = STRATEGIC_PERIOD_MAP.get(period)
@@ -1639,14 +1580,7 @@ if is_single_mode and symbol:
 
             # Capture chart image(s) once on first step
             if st.session_state.chart_b64 is None:
-                with st.spinner("Capturing chart..."):
-                    try:
-                        st.session_state.chart_b64 = chart_to_base64_png(fig)
-                    except Exception as e:
-                        st.session_state.analyzing = False
-                        st.session_state.done = True
-                        st.session_state.ai_errors = {"_chart": f"Chart export failed: {e}"}
-                        st.rerun()
+                st.session_state.chart_b64 = base64.b64encode(chart_png).decode("utf-8")
 
             # Capture strategic chart once (skipped if already attempted)
             if (
@@ -1659,12 +1593,12 @@ if is_single_mode and symbol:
                     strategic_df = fetch_stock_data(symbol, strategic_period)
                     if strategic_df is not None and not strategic_df.empty:
                         strategic_title = f"{company_name} ({symbol.upper()}) - {strategic_period}"
-                        strategic_fig = build_candlestick_chart(
+                        strategic_png = build_candlestick_chart(
                             strategic_df, symbol, ind, title=strategic_title
                         )
-                        st.session_state.strategic_chart_b64 = chart_to_base64_png(
-                            strategic_fig
-                        )
+                        st.session_state.strategic_chart_b64 = base64.b64encode(
+                            strategic_png
+                        ).decode("utf-8")
                 except Exception:
                     logger.warning("Failed to capture strategic chart", exc_info=True)
 
@@ -1887,18 +1821,8 @@ elif not is_single_mode:
                     }
                 else:
                     wl_title = f"{wl_company} ({current_sym})"
-                    wl_fig = build_candlestick_chart(wl_df, current_sym, ind, title=wl_title)
-                    try:
-                        wl_img = chart_to_base64_png(wl_fig)
-                    except Exception as e:
-                        st.session_state.watchlist_results[current_sym] = {
-                            "error": f"Chart export failed for {current_sym}: {e}",
-                        }
-                        st.session_state.watchlist_step = wl_step + 1
-                        if wl_step == wl_total:
-                            st.session_state.watchlist_analyzing = False
-                            st.session_state.watchlist_done = True
-                        st.rerun()
+                    wl_png = build_candlestick_chart(wl_df, current_sym, ind, title=wl_title)
+                    wl_img = base64.b64encode(wl_png).decode("utf-8")
                     sys_prompt, usr_prompt = build_watchlist_prompt(current_sym, wl_df, ind)
                     with st.status(f"Scanning {current_sym} ({wl_step}/{wl_total})...", expanded=False) as wl_status:
                         analysis_text, wl_error = _run_ollama_pass(
