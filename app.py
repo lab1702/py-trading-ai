@@ -929,7 +929,11 @@ def stream_ollama_response(
 
 _STREAM_RENDER_INTERVAL = 0.05  # seconds between UI re-renders during streaming
 _SCROLL_SCRIPT = (
-    '<script>frameElement.scrollIntoView({block:"end",behavior:"smooth"})</script>'
+    "<script>"
+    "requestAnimationFrame(()=>{"
+    "if(frameElement)frameElement.scrollIntoView({block:'end'})"
+    "});"
+    "</script>"
 )
 
 
