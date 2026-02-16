@@ -5,7 +5,7 @@ A web-based stock technical analysis tool that combines candlestick charting wit
 ## Features
 
 - **Candlestick charts** for any publicly-traded stock via Yahoo Finance
-- **Technical indicators** — toggle on/off:
+- **Technical indicators** — always displayed with labeled legends:
   - SMA (20, 50)
   - EMA (12, 26)
   - Bollinger Bands (20, 2σ)
@@ -61,16 +61,15 @@ The app opens at `http://localhost:8501`. Use the sidebar to switch between two 
 
 1. Enter a stock symbol (e.g. `AAPL`)
 2. Select a time period
-3. Toggle technical indicators
-4. Select one or more vision-capable models for chart analysis
-5. Optionally select a consensus model (enabled when 2+ vision models are chosen) to synthesize all analyses
-6. Click **Analyze with AI** to get streamed two-pass AI analysis of the chart
-7. Use **Download Analysis** to export results as Markdown
+3. Select one or more vision-capable models for chart analysis
+4. Optionally select a consensus model (enabled when 2+ vision models are chosen) to synthesize all analyses
+5. Click **Analyze with AI** to get streamed two-pass AI analysis of the chart
+6. Use **Download Analysis** to export results as Markdown
 
 ### Watchlist
 
 1. Enter multiple symbols (comma or newline separated)
-2. Select a time period and indicators
+2. Select a time period
 3. Select a single vision model
 4. Click **Scan Watchlist** for a quick trend/outlook scan of each symbol
 5. Use **Download Scan Results** to export the scan as Markdown
