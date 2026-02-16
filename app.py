@@ -1071,8 +1071,16 @@ def _run_ollama_pass(
             # Retry with only the first image before giving up.
             if images_b64 and len(images_b64) > 1:
                 logger.info("Model %s returned empty with %d images; retrying with 1 image", model, len(images_b64))
+                # Fix prompt text to match the single image being sent
+                retry_prompt = re.sub(
+                    r"You are provided two chart images\. "
+                    r"Image 1: (\S+) chart \(primary analysis\)\. "
+                    r"Image 2: \S+ chart \(strategic context\)\.\n",
+                    r"You are provided one chart image for the \1 timeframe.\n",
+                    user_prompt,
+                )
                 result, _thinking = _stream_to_ui(
-                    stream_ollama_response(model, system_prompt, user_prompt, images_b64[:1], num_ctx=num_ctx, base_url=base_url)
+                    stream_ollama_response(model, system_prompt, retry_prompt, images_b64[:1], num_ctx=num_ctx, base_url=base_url)
                 )
             if not result or not result.strip():
                 logger.warning("Model %s returned an empty response", model)
