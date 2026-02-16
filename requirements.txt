@@ -1,4 +1,5 @@
 streamlit
 mplfinance
 yfinance
+lxml
 requests
