@@ -61,7 +61,7 @@ This is a single-file application (`app.py`, ~1900 lines). All logic lives there
 ### UI Layer (bottom of file)
 - Two modes selectable via sidebar radio: **Single Symbol** and **Watchlist**.
 - Uses `st.session_state` with `analyzing`/`done` flags and a step-based pipeline (`analysis_step`) to process one model per `st.rerun()` cycle. Inputs are locked during analysis via a `locked` flag. A "Stop after current step" button appears in the sidebar during analysis, allowing users to cancel between rerun cycles (shows a toast notification on stop).
-- Single mode: vision model multiselect, consensus model selector (enabled at 2+ vision models), "Send chart to both passes" toggle.
+- Single mode: vision model multiselect, consensus model selector (enabled at 2+ vision models).
 - Watchlist mode: single vision model selector, processes symbols sequentially one per rerun.
 - With a single vision model, output renders directly (no expanders, no consensus). With multiple models, individual analyses appear in collapsed expanders followed by a consensus summary.
 - Both modes offer a "Download" button to export results as Markdown (single-symbol analysis or watchlist scan).
@@ -73,7 +73,7 @@ This is a single-file application (`app.py`, ~1900 lines). All logic lives there
 - Chart height is dynamic: base 500px + 200px per sub-chart (RSI/MACD/ATR/ADX). Only sub-charts with valid data are shown.
 - The app uses `st.rerun()` after each pipeline step to manage Streamlit's execution model. Analysis runs one model per rerun via `analysis_step`, with the consensus summarizer as the final step.
 - Users must select vision models explicitly (no defaults). A "Select all vision models" checkbox provides a shortcut.
-- The `send_images_both_passes` toggle controls whether chart images are sent to both passes or only the observation pass, trading quality for halved vision inference cost.
+- Chart images are always sent to both the observation and synthesis passes.
 
 ## Dependencies
 

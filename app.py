@@ -1271,15 +1271,6 @@ period = st.sidebar.selectbox(
     index=2, on_change=_on_shared_input_change, disabled=locked,
 )
 
-st.sidebar.header("Analysis Settings")
-send_images_both_passes = st.sidebar.checkbox(
-    "Send chart to both passes",
-    value=True,
-    disabled=locked,
-    help="When enabled, chart images are sent to both the observation and synthesis passes. "
-         "Disabling halves vision inference cost but may reduce quality.",
-)
-
 # Sidebar: model selection + action button
 st.sidebar.divider()
 _ollama_host_raw = st.sidebar.text_input(
@@ -1588,7 +1579,7 @@ if is_single_mode and symbol:
                         syn_system, syn_user = build_analysis_messages(
                             **prompt_args, observations=_unescape_markdown(obs_text),
                         )
-                        syn_images = images_b64 if send_images_both_passes else None
+                        syn_images = images_b64
                         result, syn_error = _run_ollama_pass(
                             current_model, syn_system, syn_user, syn_images,
                             label="Synthesis pass",
